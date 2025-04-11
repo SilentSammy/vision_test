@@ -1,51 +1,31 @@
 import time
 import math
-from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-from pynput import keyboard
 import cv2
 import numpy as np
 from simple_pid import PID
+from coppeliasim_zmqremoteapi_client import RemoteAPIClient
+from pynput import keyboard
 
+# Minimal DifferentialCar class (assuming the rest of the code is in place)
 class DifferentialCar:
     def __init__(self, left_wheel=None, right_wheel=None):
-        # Get wheel handles from the global sim object
         self.left_wheel = left_wheel or sim.getObject('/DynamicLeftJoint')
         self.right_wheel = right_wheel or sim.getObject('/DynamicRightJoint')
-        
-        # Internal speeds (m/s and rad/s)
         self._linear_speed = 0.0
         self._angular_speed = 0.0
-
-        # Differential car constants
-        self.nominalLinearVelocity = 0.3    # nominal linear speed (m/s)
-        self.wheelRadius = 0.027            # wheel radius (m)
-        self.interWheelDistance = 0.119     # distance between wheels (m)
-        
-        # Apply initial wheel speeds
+        self.wheelRadius = 0.027
+        self.interWheelDistance = 0.119
         self._update_wheel_velocities()
-
+    
     def _update_wheel_velocities(self):
         left_speed = (self._linear_speed - (self._angular_speed * self.interWheelDistance / 2)) / self.wheelRadius
         right_speed = (self._linear_speed + (self._angular_speed * self.interWheelDistance / 2)) / self.wheelRadius
-        
-        # Convert to Python float to avoid serialization issues.
         left_speed = float(left_speed)
         right_speed = float(right_speed)
-        
-        # Batch update using stepping
         client.setStepping(True)
         sim.setJointTargetVelocity(self.left_wheel, left_speed)
         sim.setJointTargetVelocity(self.right_wheel, right_speed)
         client.setStepping(False)
-
-    @property
-    def linear_speed(self):
-        return self._linear_speed
-    
-    @linear_speed.setter
-    def linear_speed(self, value):
-        self._linear_speed = value
-        self._update_wheel_velocities()
     
     @property
     def angular_speed(self):
@@ -55,8 +35,17 @@ class DifferentialCar:
     def angular_speed(self, value):
         self._angular_speed = value
         self._update_wheel_velocities()
+    
+    @property
+    def linear_speed(self):
+        return self._linear_speed
+    
+    @linear_speed.setter
+    def linear_speed(self, value):
+        self._linear_speed = value
+        self._update_wheel_velocities()
 
-# Monitor key presses
+# Global variables & setup.
 pressed_keys = set()
 def on_press(key):
     pressed_keys.add(key.char if hasattr(key, 'char') else str(key))
@@ -64,33 +53,26 @@ def on_release(key):
     pressed_keys.discard(key.char if hasattr(key, 'char') else str(key))
 keyboard.Listener(on_press=on_press, on_release=on_release).start()
 
-# Connect and get simulator objects
 client = RemoteAPIClient('localhost', 23000)
 sim = client.getObject('sim')
-cal_cam = sim.getObject('/calibrationCamera')
 car_cam = sim.getObject('/LineTracer/visionSensor')
-sky_cam = sim.getObject('/skyCam')
-aru_cam = sim.getObject('/aruCam')
 car = DifferentialCar()
 
-# Camera parameters
 dist_coeffs = np.zeros((5, 1), dtype=np.float32)
 camera_matrix = np.array([[443.4, 0, 256],
                           [0, 443.4, 256],
                           [0, 0, 1]], dtype=np.float32)
 
-# Time
+# Time globals.
 dt = 0
 start = time.time()
 last = start
 elapsed = 0
 
-# Control
+# Control globals.
 cam_yaw = 0.0
-heading_pid = PID(Kp=0.02, Ki=0, Kd=0, setpoint=0.0)
-cam_dist = 0.0
-distance_pid = PID(Kp=1, Ki=0, Kd=0, setpoint=1)
-distance_pid.output_limits = (-0.5, 0.5)
+# Start with pure proportional control (simulate oscillations)
+cam_yaw_pid = PID(Kp=0.5, Ki=0, Kd=0, setpoint=0.0)
 
 def time_step():
     global dt, last, elapsed
@@ -240,41 +222,89 @@ def estimate_pose(marker_corners, frame, ref_size=None, camera_matrix=None, dist
     return (yaw, new_pitch, roll, estimated_distance, cam_pitch, cam_yaw)
 
 def sense():
-    global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
+    global frame, cam_pitch, cam_yaw, yaw, pitch, roll, distance
     frame = get_image(car_cam)
     corners, ids = find_arucos(frame)
     if ids is not None and len(corners) > 0:
         # yaw, pitch, roll, distance = estimate_pose(corners[0], frame, ref_size=0.08203125)
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
-        print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
+        yaw, pitch, roll, distance, cam_pitch, cam_yaw = estimate_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
+        print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {distance:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
 
     cv2.imshow('Vision Sensor Image', frame)
     cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
 
 def actuate():
-    max_linear_speed = 0.5
-    max_angular_speed = math.radians(30)
-
-    if True or 'r' in pressed_keys: # Automatic control
-        car.angular_speed = heading_pid(cam_yaw)
-        car.linear_speed = -distance_pid(cam_dist)
-    else:   # Manual control
-        car.angular_speed = max_angular_speed if 'a' in pressed_keys else -max_angular_speed if 'd' in pressed_keys else 0
+    # For autotuning, we use auto mode ('r' key pressed)
+    if 'r' in pressed_keys:
+        car.angular_speed = cam_yaw_pid(cam_yaw)
+    else:
+        # Manual control fallback.
+        max_linear_speed = 0.5
+        max_angular_speed = math.radians(90)
         car.linear_speed = max_linear_speed if 'w' in pressed_keys else -max_linear_speed if 's' in pressed_keys else 0
+        car.angular_speed = max_angular_speed if 'a' in pressed_keys else -max_angular_speed if 'd' in pressed_keys else 0
+
+def autotune_pid(autotune_duration=30):
+    """Run the system in auto mode (assume only P control) for a set duration,
+       record cam_yaw and compute oscillation period Pu, then use Ziegler–Nichols tuning."""
+    print("Starting autotune... Drive the car in auto mode (press 'r') to induce oscillations.")
+    initial_time = time.time()
+    time_series = []
+    yaw_series = []
+    while time.time() - initial_time < autotune_duration:
+        time_step()
+        sense()
+        actuate()  # auto mode should be active (press 'r')
+        # Record the current time (relative) and cam_yaw measurement.
+        time_series.append(time.time() - initial_time)
+        yaw_series.append(cam_yaw)
+        cv2.waitKey(1)
+    # Simple peak detection: find local maxima in the cam_yaw time series.
+    peaks = []
+    peak_times = []
+    for i in range(1, len(yaw_series)-1):
+        if yaw_series[i] > yaw_series[i-1] and yaw_series[i] > yaw_series[i+1]:
+            peaks.append(yaw_series[i])
+            peak_times.append(time_series[i])
+    if len(peak_times) < 2:
+        print("Not enough oscillation detected for autotuning.")
+        return
+    periods = [peak_times[i+1] - peak_times[i] for i in range(len(peak_times)-1)]
+    Pu = sum(periods) / len(periods)
+    # Ku is the current proportional gain.
+    Ku = cam_yaw_pid.Kp
+    # Ziegler–Nichols tuning rule for PID.
+    new_Kp = 0.6 * Ku
+    new_Ki = 1.2 * Ku / Pu
+    new_Kd = 0.075 * Ku * Pu
+    print(f"Autotune results: Ku = {Ku:.3f}, Pu = {Pu:.3f}")
+    print(f"New PID constants => Kp: {new_Kp:.3f}, Ki: {new_Ki:.3f}, Kd: {new_Kd:.3f}")
+    # Update the PID controller.
+    cam_yaw_pid.Kp = new_Kp
+    cam_yaw_pid.Ki = new_Ki
+    cam_yaw_pid.Kd = new_Kd
 
 # --- Main program ---
 frame = None
 try:
     sim.startSimulation()
+    # Let the car drive in auto mode for 60 seconds.
+    auto_duration = 60  # seconds before autotuning
+    start_auto = time.time()
+    while time.time() - start_auto < auto_duration:
+        time_step()
+        sense()
+        actuate()
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+    # Now run autotune (for 30 seconds) and print the optimum PID gains.
+    autotune_pid(30)
+    # Continue running so you can see the effect.
     while sim.getSimulationState() != sim.simulation_stopped:
         time_step()
-
         sense()
-
         actuate()
-
         if cv2.waitKey(1) & 0xFF == 27:
             break
 finally:
     sim.stopSimulation()
-    # cv2.imwrite('last_frame.png', frame)
