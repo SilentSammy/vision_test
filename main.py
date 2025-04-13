@@ -58,8 +58,16 @@ class DifferentialCar:
 
 # Monitor key presses
 pressed_keys = set()
+toggles = {}
+def is_toggled(key):
+    if key not in toggles:
+        toggles[key] = False
+    return toggles.get(key, False)
 def on_press(key):
-    pressed_keys.add(key.char if hasattr(key, 'char') else str(key))
+    key_repr = key.char if hasattr(key, 'char') else str(key)
+    pressed_keys.add(key_repr)
+    if key_repr in toggles:
+        toggles[key_repr] = not toggles[key_repr]
 def on_release(key):
     pressed_keys.discard(key.char if hasattr(key, 'char') else str(key))
 keyboard.Listener(on_press=on_press, on_release=on_release).start()
@@ -88,8 +96,8 @@ elapsed = 0
 # Control
 cam_yaw = 0.0
 heading_pid = PID(Kp=0.02, Ki=0, Kd=0, setpoint=0.0)
-cam_dist = 0.0
-distance_pid = PID(Kp=1, Ki=0, Kd=0, setpoint=1)
+cam_dist = 0.2
+distance_pid = PID(Kp=1, Ki=0, Kd=0, setpoint=cam_dist)
 distance_pid.output_limits = (-0.5, 0.5)
 
 def time_step():
@@ -106,6 +114,109 @@ def get_image(vision_sensor_handle):
     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     img = cv2.flip(img, 0)
     return img
+
+def find_ellipses(frame, lower_hsv, upper_hsv):
+    import cv2
+    import numpy as np
+    import math
+
+    # Convert frame to HSV color space
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # Create a mask for colors in the desired range
+    mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
+    
+    # Optional: Remove noise with morphological operations.
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.erode(mask, kernel, iterations=1)
+    mask = cv2.dilate(mask, kernel, iterations=2)
+    
+    # Find contours in the mask.
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    ellipses = []
+    for cnt in contours:
+        # An ellipse requires at least 5 points.
+        if len(cnt) < 5:
+            continue
+        
+        # Filter out small contours by area.
+        area = cv2.contourArea(cnt)
+        if area < 50:
+            continue
+        
+        # Fit an ellipse to the contour.
+        ellipse = cv2.fitEllipse(cnt)
+        ellipses.append(ellipse)
+        
+        # Draw the fitted ellipse.
+        cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
+        
+        # Unpack ellipse parameters.
+        (center_x, center_y), (major, minor), angle = ellipse
+        center = (int(center_x), int(center_y))
+        
+        # Convert angle from degrees to radians.
+        theta = math.radians(angle)
+        
+        # Compute endpoints for the major axis.
+        major_dx = (major / 2) * math.cos(theta)
+        major_dy = (major / 2) * math.sin(theta)
+        pt1 = (int(center_x - major_dx), int(center_y - major_dy))
+        pt2 = (int(center_x + major_dx), int(center_y + major_dy))
+        cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
+        
+        # Compute endpoints for the minor axis.
+        # Minor axis is rotated by 90 degrees relative to major axis.
+        theta_minor = theta + math.pi/2  
+        minor_dx = (minor / 2) * math.cos(theta_minor)
+        minor_dy = (minor / 2) * math.sin(theta_minor)
+        pt3 = (int(center_x - minor_dx), int(center_y - minor_dy))
+        pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
+        cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
+    
+    return ellipses
+
+def estimate_circle_pose(ellipse, frame, camera_matrix):
+    """
+    Estimates the camera's yaw and pitch relative to a circle (detected as an ellipse).
+    
+    Parameters:
+      ellipse: Tuple ((center_x, center_y), (major, minor), angle)
+      frame: The current image frame.
+      camera_matrix: The camera calibration matrix.
+      
+    Returns:
+      Tuple (cam_pitch, cam_yaw)
+    """
+    import math, numpy as np
+    
+    # Unpack ellipse parameters: We only need the center.
+    (center_x, center_y), _, _ = ellipse
+    
+    # Get frame dimensions.
+    h, w, _ = frame.shape
+    
+    # Extract focal lengths and the principal point from the camera matrix.
+    fx = camera_matrix[0, 0]
+    fy = camera_matrix[1, 1]
+    cx = camera_matrix[0, 2]
+    cy = camera_matrix[1, 2]
+    
+    # Compute horizontal and vertical FOV (in degrees).
+    fov_x = math.degrees(2 * math.atan(w / (2 * fx)))
+    fov_y = math.degrees(2 * math.atan(h / (2 * fy)))
+    
+    # Compute pixel offsets from the principal point.
+    offset_x = center_x - cx
+    offset_y = center_y - cy
+    
+    # Convert pixel offsets to angular offsets.
+    # Here: half image width corresponds to half of fov_x, similarly for height.
+    cam_yaw = (offset_x / (w / 2)) * (fov_x / 2)
+    cam_pitch = -(offset_y / (h / 2)) * (fov_y / 2)
+    
+    return cam_pitch, cam_yaw
 
 def find_arucos(frame):
     # Detect markers
@@ -124,7 +235,7 @@ def find_arucos(frame):
     
     return corners, ids
 
-def estimate_pose(marker_corners, frame, ref_size=None, camera_matrix=None, dist_coeffs=None, marker_length=None):
+def estimate_marker_pose(marker_corners, frame, ref_size=None, camera_matrix=None, dist_coeffs=None, marker_length=None):
     """
     Estimates pose and extracts Euler angles (yaw, pitch, roll) and distance.
     
@@ -239,14 +350,24 @@ def estimate_pose(marker_corners, frame, ref_size=None, camera_matrix=None, dist
 
     return (yaw, new_pitch, roll, estimated_distance, cam_pitch, cam_yaw)
 
-def sense():
+def sense1():
     global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
     frame = get_image(car_cam)
     corners, ids = find_arucos(frame)
     if ids is not None and len(corners) > 0:
         # yaw, pitch, roll, distance = estimate_pose(corners[0], frame, ref_size=0.08203125)
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
+        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
         print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
+
+    cv2.imshow('Vision Sensor Image', frame)
+    cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
+
+def sense():
+    global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
+    lower_green = (45, 100, 100)
+    upper_green = (75, 255, 255)
+    frame = get_image(car_cam)
+    ellipses = find_ellipses(frame, lower_green, upper_green)
 
     cv2.imshow('Vision Sensor Image', frame)
     cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
@@ -254,11 +375,13 @@ def sense():
 def actuate():
     max_linear_speed = 0.5
     max_angular_speed = math.radians(30)
+    yaw_threshold = 10
 
-    if True or 'r' in pressed_keys: # Automatic control
+    if is_toggled('m'):
         car.angular_speed = heading_pid(cam_yaw)
-        car.linear_speed = -distance_pid(cam_dist)
-    else:   # Manual control
+        factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
+        car.linear_speed = factor * (-distance_pid(cam_dist))
+    else:
         car.angular_speed = max_angular_speed if 'a' in pressed_keys else -max_angular_speed if 'd' in pressed_keys else 0
         car.linear_speed = max_linear_speed if 'w' in pressed_keys else -max_linear_speed if 's' in pressed_keys else 0
 
