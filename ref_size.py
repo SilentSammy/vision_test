@@ -1,9 +1,21 @@
 import cv2
 import numpy as np
 import math
+import tkinter as tk
+from tkinter import filedialog
 
-# Load the image
-frame = cv2.imread('last_frame.png')
+# Use a file dialog to select the image
+
+root = tk.Tk()
+root.withdraw()  # Hide the root window
+file_path = filedialog.askopenfilename(title="Select an image file", filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.tiff")])
+
+if not file_path:
+    print("No file selected.")
+    exit(1)
+
+# Load the selected image
+frame = cv2.imread(file_path)
 if frame is None:
     print("Error: Could not load 'last_frame.png'")
     exit(1)

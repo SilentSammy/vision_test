@@ -1,10 +1,10 @@
-import time
-import math
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 from pynput import keyboard
-import cv2
-import numpy as np
 from simple_pid import PID
+import numpy as np
+import time
+import math
+import cv2
 
 class DifferentialCar:
     def __init__(self, left_wheel=None, right_wheel=None):
@@ -75,10 +75,9 @@ keyboard.Listener(on_press=on_press, on_release=on_release).start()
 # Connect and get simulator objects
 client = RemoteAPIClient('localhost', 23000)
 sim = client.getObject('sim')
-cal_cam = sim.getObject('/calibrationCamera')
 car_cam = sim.getObject('/LineTracer/visionSensor')
-sky_cam = sim.getObject('/skyCam')
 aru_cam = sim.getObject('/aruCam')
+disc_cam = sim.getObject('/discCam')
 car = DifferentialCar()
 
 # Camera parameters
@@ -116,10 +115,6 @@ def get_image(vision_sensor_handle):
     return img
 
 def find_ellipses(frame, lower_hsv, upper_hsv):
-    import cv2
-    import numpy as np
-    import math
-
     # Convert frame to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
@@ -127,9 +122,9 @@ def find_ellipses(frame, lower_hsv, upper_hsv):
     mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
     
     # Optional: Remove noise with morphological operations.
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.erode(mask, kernel, iterations=1)
-    mask = cv2.dilate(mask, kernel, iterations=2)
+    # kernel = np.ones((5, 5), np.uint8)
+    # mask = cv2.erode(mask, kernel, iterations=1)
+    # mask = cv2.dilate(mask, kernel, iterations=2)
     
     # Find contours in the mask.
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -177,46 +172,128 @@ def find_ellipses(frame, lower_hsv, upper_hsv):
     
     return ellipses
 
-def estimate_circle_pose(ellipse, frame, camera_matrix):
+def estimate_circle_pose(ellipse, frame, camera_matrix=None, real_diameter=None, ref_size=None, fov_x=None, fov_y=None):
     """
-    Estimates the camera's yaw and pitch relative to a circle (detected as an ellipse).
+    Estimates the distance, yaw, and pitch of the camera relative to a circle
+    (detected as an ellipse). Two approaches are available:
+    
+      Traditional approach:
+         If calibration parameters (i.e. a camera_matrix) and real_diameter are provided,
+         this method uses the pinhole camera model:
+             estimated_distance = (real_diameter * fx) / (major_axis * corrective_factor)
+         (Optionally, you may apply a corrective_factor to the measured ellipse axes.)
+      
+      Custom (ref_size) approach:
+         If calibration parameters are not provided but a ref_size is supplied,
+         then default calibration parameters are assumed to compute the normalized major axis.
+         The distance is then computed as:
+             estimated_distance = ref_size / normalized_major
+         (where normalized_major = (corrected_major_axis) / image_width)
+    
+    In either case, the function also computes angular offsets (cam_pitch and cam_yaw)
+    based on the ellipse center, the assumed (or provided) camera matrix, and the frame dimensions.
     
     Parameters:
-      ellipse: Tuple ((center_x, center_y), (major, minor), angle)
+      ellipse: Tuple ((center_x, center_y), (axis1, axis2), angle)
       frame: The current image frame.
-      camera_matrix: The camera calibration matrix.
+      camera_matrix: (Optional) The camera calibration matrix.
+      real_diameter: (Optional) The true diameter of the circle (meters) for the traditional approach.
+      ref_size: (Optional) The normalized apparent size of a reference object (as used in marker pose)
+                for the custom approach.
       
     Returns:
-      Tuple (cam_pitch, cam_yaw)
+      Tuple (estimated_distance, cam_pitch, cam_yaw)
     """
-    import math, numpy as np
-    
-    # Unpack ellipse parameters: We only need the center.
-    (center_x, center_y), _, _ = ellipse
-    
-    # Get frame dimensions.
+
+    def estimate_circle_orientation(ellipse):
+        """
+        Given an ellipse (from cv2.fitEllipse), compute the circle's orientation.
+        It first computes the tilt based on the axis ratio (minor/major = cos(tilt)).
+        Then, using the ellipse's angle, it distributes this tilt into yaw and pitch components.
+        Returns a tuple (yaw, pitch) in degrees (with roll assumed to be zero).
+        """
+        # Unpack ellipse parameters.
+        # ellipse = ((center_x, center_y), (axis1, axis2), angle)
+        (center_x, center_y), (axis1, axis2), angle = ellipse
+        major = max(axis1, axis2)
+        minor = min(axis1, axis2)
+        # Avoid division by zero.
+        if major == 0:
+            tilt_deg = 0
+        else:
+            # Compute the tilt angle from the ratio.
+            tilt_rad = math.acos(minor / major)
+            tilt_deg = math.degrees(tilt_rad)
+        
+        # Convert the ellipse's angle to radians.
+        angle_rad = math.radians(angle)
+        
+        # Distribute the tilt: if angle=0, all tilt goes to yaw; if angle=90, all goes to pitch.
+        yaw   = tilt_deg * math.cos(angle_rad)
+        pitch = tilt_deg * math.sin(angle_rad)
+        
+        return yaw, pitch, 0
+
     h, w, _ = frame.shape
+
+    # Unpack ellipse. We'll use the larger axis as the apparent diameter.
+    (center_x, center_y), axes, angle = ellipse
+    measured_major = max(axes)
     
-    # Extract focal lengths and the principal point from the camera matrix.
+    # Optionally, apply a corrective factor to compensate for ellipse overestimation.
+    # corrective_factor = 0.84
+    corrective_factor = 1.0
+    corrected_major = measured_major * corrective_factor
+
+    # Determine which approach to use.
+    # Traditional required both a camera_matrix and a real_diameter.
+    use_traditional = (camera_matrix is not None and real_diameter is not None)
+    use_custom = (not use_traditional and ref_size is not None)
+    
+    if not use_traditional and not use_custom:
+        raise ValueError("Insufficient parameters. Provide either (camera_matrix and real_diameter) or ref_size.")
+
+    if not use_traditional:
+        # Custom approach: assume default calibration parameters.
+        # These defaults should match those used when creating the ref_size.
+        fx_default = fy_default = 800.0
+        cx_default, cy_default = w / 2.0, h / 2.0
+        camera_matrix = np.array([[fx_default, 0, cx_default],
+                                  [0, fy_default, cy_default],
+                                  [0, 0, 1]], dtype=np.float32)
+        # Calculate normalized major axis: ratio of corrected_major to image width.
+        normalized_major = corrected_major / float(w)
+        estimated_distance = ref_size / normalized_major
+    else:
+        # Traditional approach using the pinhole camera model.
+        fx = camera_matrix[0, 0]
+        # Use the corrected major axis for distance estimation.
+        estimated_distance = (real_diameter * fx) / corrected_major if corrected_major > 0 else 0.0
+
+    # In either case, use the (assumed or provided) camera_matrix to compute angular offsets.
     fx = camera_matrix[0, 0]
     fy = camera_matrix[1, 1]
     cx = camera_matrix[0, 2]
     cy = camera_matrix[1, 2]
     
-    # Compute horizontal and vertical FOV (in degrees).
-    fov_x = math.degrees(2 * math.atan(w / (2 * fx)))
-    fov_y = math.degrees(2 * math.atan(h / (2 * fy)))
+    # Use externally provided fov values if they exist; otherwise compute.
+    if fov_x is None:
+        fov_x = math.degrees(2 * math.atan(w / (2 * fx)))
+    if fov_y is None:
+        fov_y = math.degrees(2 * math.atan(h / (2 * fy)))
     
     # Compute pixel offsets from the principal point.
     offset_x = center_x - cx
     offset_y = center_y - cy
     
-    # Convert pixel offsets to angular offsets.
-    # Here: half image width corresponds to half of fov_x, similarly for height.
-    cam_yaw = (offset_x / (w / 2)) * (fov_x / 2)
-    cam_pitch = -(offset_y / (h / 2)) * (fov_y / 2)
+    # Convert these pixel offsets to angular offsets.
+    cam_yaw = -(offset_x / (w / 2)) * (fov_x / 2)
+    cam_pitch = (offset_y / (h / 2)) * (fov_y / 2)
     
-    return cam_pitch, cam_yaw
+    yaw, pitch, roll = estimate_circle_orientation(ellipse)
+
+    # return estimated_distance, cam_pitch, cam_yaw
+    return yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw
 
 def find_arucos(frame):
     # Detect markers
@@ -235,7 +312,7 @@ def find_arucos(frame):
     
     return corners, ids
 
-def estimate_marker_pose(marker_corners, frame, ref_size=None, camera_matrix=None, dist_coeffs=None, marker_length=None):
+def estimate_marker_pose(marker_corners, frame, camera_matrix=None, dist_coeffs=None, marker_length=None, ref_size=None, fov_x=None, fov_y=None):
     """
     Estimates pose and extracts Euler angles (yaw, pitch, roll) and distance.
     
@@ -250,14 +327,11 @@ def estimate_marker_pose(marker_corners, frame, ref_size=None, camera_matrix=Non
              estimated_distance = ref_size / normalized_apparent_size
          (with normalized_apparent_size = apparent_size_pixels / image_width).
          
-      In addition, the function calculates the camera’s pitch and yaw relative to the marker 
+      In addition, the function calculates the camera's pitch and yaw relative to the marker 
       based on its position in the image.
       
       Returns a tuple: (yaw, pitch, roll, distance, cam_pitch, cam_yaw)
     """
-    import math
-    import numpy as np
-    import cv2
 
     def rotationMatrixToEulerAngles(R):
         """
@@ -332,9 +406,12 @@ def estimate_marker_pose(marker_corners, frame, ref_size=None, camera_matrix=Non
     # Extract focal lengths from the camera matrix.
     fx = camera_matrix[0, 0]
     fy = camera_matrix[1, 1]
-    # Compute horizontal and vertical FOV (in degrees)
-    fov_x = math.degrees(2 * math.atan(w / (2 * fx)))
-    fov_y = math.degrees(2 * math.atan(h / (2 * fy)))
+    
+    # Use externally provided fov values if they exist; otherwise compute.
+    if fov_x is None:
+        fov_x = math.degrees(2 * math.atan(w / (2 * fx)))
+    if fov_y is None:
+        fov_y = math.degrees(2 * math.atan(h / (2 * fy)))
     
     # Compute the marker center.
     marker_center = np.mean(marker_corners.reshape((4, 2)), axis=0)
@@ -345,18 +422,18 @@ def estimate_marker_pose(marker_corners, frame, ref_size=None, camera_matrix=Non
     offset_x = marker_center[0] - cx
     offset_y = marker_center[1] - cy
     # Convert pixel offsets to angular offsets: half image width corresponds to half fov_x, etc.
-    cam_yaw = (offset_x / (w / 2)) * (fov_x / 2)
-    cam_pitch = -(offset_y / (h / 2)) * (fov_y / 2)
+    cam_yaw = -(offset_x / (w / 2)) * (fov_x / 2)
+    cam_pitch = (offset_y / (h / 2)) * (fov_y / 2)
 
     return (yaw, new_pitch, roll, estimated_distance, cam_pitch, cam_yaw)
 
 def sense1():
     global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
-    frame = get_image(car_cam)
+    frame = get_image(aru_cam)
     corners, ids = find_arucos(frame)
     if ids is not None and len(corners) > 0:
-        # yaw, pitch, roll, distance = estimate_pose(corners[0], frame, ref_size=0.08203125)
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
+        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, ref_size=0.083984375, fov_x=60, fov_y=60)
+        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
         print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
 
     cv2.imshow('Vision Sensor Image', frame)
@@ -366,8 +443,13 @@ def sense():
     global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
     lower_green = (45, 100, 100)
     upper_green = (75, 255, 255)
-    frame = get_image(car_cam)
+    frame = get_image(disc_cam)
     ellipses = find_ellipses(frame, lower_green, upper_green)
+    if ellipses:
+        # Use the first detected ellipse for pose estimation.
+        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, ref_size=0.08438144624233246, fov_x=60, fov_y=60)
+        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
+        print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
 
     cv2.imshow('Vision Sensor Image', frame)
     cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
@@ -385,8 +467,18 @@ def actuate():
         car.angular_speed = max_angular_speed if 'a' in pressed_keys else -max_angular_speed if 'd' in pressed_keys else 0
         car.linear_speed = max_linear_speed if 'w' in pressed_keys else -max_linear_speed if 's' in pressed_keys else 0
 
+def screenshot_and_exit():
+    frame = get_image(aru_cam)
+    cv2.imshow('Vision Sensor Image', frame)
+    cv2.imwrite('last_frame.png', frame)
+    cv2.waitKey(1000)
+    raise SystemExit
+
 # --- Main program ---
 frame = None
+
+# screenshot_and_exit()
+
 try:
     sim.startSimulation()
     while sim.getSimulationState() != sim.simulation_stopped:
@@ -400,4 +492,3 @@ try:
             break
 finally:
     sim.stopSimulation()
-    # cv2.imwrite('last_frame.png', frame)
