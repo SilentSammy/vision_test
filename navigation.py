@@ -80,8 +80,6 @@ keyboard.Listener(on_press=on_press, on_release=on_release).start()
 client = RemoteAPIClient('localhost', 23000)
 sim = client.getObject('sim')
 car_cam = sim.getObject('/LineTracer/visionSensor')
-aru_cam = sim.getObject('/aruCam')
-disc_cam = sim.getObject('/discCam')
 car = DifferentialCar()
 
 # Camera parameters
@@ -293,199 +291,73 @@ def estimate_circle_pose(ellipse, frame, camera_matrix=None, real_diameter=None,
     # return estimated_distance, cam_pitch, cam_yaw
     return yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw
 
-def find_arucos(frame):
-    # Detect markers
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    if hasattr(cv2.aruco, 'DetectorParameters_create'):
-        parameters = cv2.aruco.DetectorParameters_create()
-    else:
-        parameters = cv2.aruco.DetectorParameters()
-    corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
-
-    # print(f"Detected {len(corners)} markers")
-
-    if ids is not None:
-        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-    
-    return corners, ids
-
-def estimate_marker_pose(marker_corners, frame, camera_matrix=None, dist_coeffs=None, marker_length=None, ref_size=None, fov_x=None, fov_y=None):
-    """
-    Estimates pose and extracts Euler angles (yaw, pitch, roll) and distance.
-    
-    Two modes are available:
-      1. Traditional approach:
-         If calibration parameters (camera_matrix, dist_coeffs, and marker_length) are provided,
-         this method uses cv2.aruco.estimatePoseSingleMarkers.
-         
-      2. Custom (ref_size) approach:
-         If calibration parameters are not provided but a ref_size is, then default calibration 
-         parameters are assumed and the distance is computed based on the marker's apparent size:
-             estimated_distance = ref_size / normalized_apparent_size
-         (with normalized_apparent_size = apparent_size_pixels / image_width).
-         
-      In addition, the function calculates the camera's pitch and yaw relative to the marker 
-      based on its position in the image.
-      
-      Returns a tuple: (yaw, pitch, roll, distance, cam_pitch, cam_yaw)
-    """
-
-    def rotationMatrixToEulerAngles(R):
-        """
-        Converts a rotation matrix to Euler angles (roll, pitch, yaw) using the 
-        Tait–Bryan angles convention. Returns a numpy array [roll, pitch, yaw] in radians.
-        """
-        sy = math.sqrt(R[0, 0]**2 + R[1, 0]**2)
-        singular = sy < 1e-6
-        if not singular:
-            roll = math.atan2(R[2, 1], R[2, 2])
-            pitch = math.atan2(-R[2, 0], sy)
-            yaw = math.atan2(R[1, 0], R[0, 0])
-        else:
-            roll = math.atan2(-R[1, 2], R[1, 1])
-            pitch = math.atan2(-R[2, 0], sy)
-            yaw = 0
-        return np.array([roll, pitch, yaw])
-
-    h, w, _ = frame.shape
-
-    # Determine which approach to use.
-    use_traditional = (camera_matrix is not None and dist_coeffs is not None and marker_length is not None)
-    use_custom = (not use_traditional and ref_size is not None)
-    
-    if not use_traditional and not use_custom:
-        raise ValueError("Insufficient parameters. Provide calibration parameters (camera_matrix, dist_coeffs, marker_length) or a ref_size.")
-    
-    # If calibration parameters are missing, assume defaults.
-    if not use_traditional:
-        marker_length = 0.05  # default marker size in meters
-        fx_default = fy_default = 800.0
-        cx_default, cy_default = w / 2.0, h / 2.0
-        camera_matrix = np.array([[fx_default, 0, cx_default],
-                                  [0, fy_default, cy_default],
-                                  [0, 0, 1]], dtype=np.float32)
-        dist_coeffs = np.zeros((5, 1), dtype=np.float32)
-
-    # Compute pose using the traditional method.
-    ret_vals = cv2.aruco.estimatePoseSingleMarkers(marker_corners, marker_length, camera_matrix, dist_coeffs)
-    if ret_vals is None or len(ret_vals[0]) == 0:
-        return None
-
-    # Extract rotation vector and convert it to Euler angles.
-    rvec = ret_vals[0][0][0]  # rotation vector for the first detected marker
-    R, _ = cv2.Rodrigues(rvec)
-    euler_rad = rotationMatrixToEulerAngles(R)
-    euler_deg = np.degrees(euler_rad)
-    # Mapping convention:
-    yaw = euler_deg[1]
-    new_pitch = ((180 - euler_deg[0] + 180) % 360) - 180  # adjusted pitch
-    roll = euler_deg[2]
-
-    # Determine distance.
-    if use_custom:
-        # Compute apparent marker size.
-        corners_array = marker_corners.reshape((4, 2))
-        distances = []
-        for i in range(4):
-            j = (i + 1) % 4
-            dx = corners_array[j][0] - corners_array[i][0]
-            dy = corners_array[j][1] - corners_array[i][1]
-            distances.append(math.hypot(dx, dy))
-        apparent_size_pixels = max(distances)
-        normalized_apparent_size = apparent_size_pixels / float(w)
-        estimated_distance = ref_size / normalized_apparent_size
-    else:
-        # Use translation vector from the pose.
-        tvec = ret_vals[1][0][0]
-        estimated_distance = np.linalg.norm(tvec)
-
-    # Calculate the camera's pitch and yaw relative to the marker using both FOV axes.
-    # Extract focal lengths from the camera matrix.
-    fx = camera_matrix[0, 0]
-    fy = camera_matrix[1, 1]
-    
-    # Use externally provided fov values if they exist; otherwise compute.
-    if fov_x is None:
-        fov_x = math.degrees(2 * math.atan(w / (2 * fx)))
-    if fov_y is None:
-        fov_y = math.degrees(2 * math.atan(h / (2 * fy)))
-    
-    # Compute the marker center.
-    marker_center = np.mean(marker_corners.reshape((4, 2)), axis=0)
-    # Get principal point from the camera matrix.
-    cx = camera_matrix[0, 2]
-    cy = camera_matrix[1, 2]
-    # Pixel offsets from the principal point.
-    offset_x = marker_center[0] - cx
-    offset_y = marker_center[1] - cy
-    # Convert pixel offsets to angular offsets: half image width corresponds to half fov_x, etc.
-    cam_yaw = -(offset_x / (w / 2)) * (fov_x / 2)
-    cam_pitch = (offset_y / (h / 2)) * (fov_y / 2)
-
-    return (yaw, new_pitch, roll, estimated_distance, cam_pitch, cam_yaw)
-
-def sense1():
-    global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
-    frame = get_image(aru_cam)
-    corners, ids = find_arucos(frame)
-    if ids is not None and len(corners) > 0:
-        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, ref_size=0.083984375, fov_x=60, fov_y=60)
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
-        print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
-
-    cv2.imshow('Vision Sensor Image', frame)
-    cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
-
-def sense():
-    global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
-    lower_green = (45, 100, 100)
-    upper_green = (75, 255, 255)
-    frame = get_image(disc_cam)
-    ellipses = find_ellipses(frame, lower_green, upper_green)
-    if ellipses:
-        # Use the first detected ellipse for pose estimation.
-        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, ref_size=0.08438144624233246, fov_x=60, fov_y=60)
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
-        # cam_dist *= 1.05
-        print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
-
-    cv2.imshow('Vision Sensor Image', frame)
-    cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
-
-def actuate():
-    max_linear_speed = 0.5
-    max_angular_speed = math.radians(30)
-    yaw_threshold = 10
-
-    if is_toggled('m'):
-        car.angular_speed = heading_pid(cam_yaw)
-        factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
-        car.linear_speed = factor * (-distance_pid(cam_dist))
-    else:
-        car.angular_speed = max_angular_speed if 'a' in pressed_keys else -max_angular_speed if 'd' in pressed_keys else 0
-        car.linear_speed = max_linear_speed if 'w' in pressed_keys else -max_linear_speed if 's' in pressed_keys else 0
-
-def screenshot_and_exit():
-    frame = get_image(aru_cam)
-    cv2.imshow('Vision Sensor Image', frame)
-    cv2.imwrite('last_frame.png', frame)
-    cv2.waitKey(1000)
-    raise SystemExit
-
 # --- Main program ---
+# State 0: Stop
+# State 1: Move towards green disc (green disc detected)
+# State 2: Pause (yellow disc detected)
+# State 3: Spin clockwise (orange disc detected)
+# State 4: Spin counter-clockwise (blue disc detected)
+
 frame = None
-
-# screenshot_and_exit()
-
+state = 0
+stopped_until = 0.0
 try:
     sim.startSimulation()
     while sim.getSimulationState() != sim.simulation_stopped:
         time_step()
 
-        sense()
+        # See
+        frame = get_image(car_cam)
+        green_discs = find_ellipses(frame.copy(), (45, 100, 100), (75, 255, 255))
+        orange_discs = find_ellipses(frame.copy(), (10, 100, 100), (25, 255, 255))
+        blue_discs = find_ellipses(frame.copy(), (100, 100, 100), (140, 255, 255))
+        yellow_discs = find_ellipses(frame.copy(), (20, 100, 100), (40, 255, 255))
 
-        actuate()
+        # In your main simulation loop:
+        current_time = time.time()
+
+        # Decide state without immediately overwriting state 2 if it's already active.
+        if state != 2:  # Only update state if not already in pause.
+            if not green_discs and not orange_discs and not blue_discs and not yellow_discs:
+                state = 0
+            elif yellow_discs:
+                state = 2
+                stopped_until = current_time + 5.0
+            elif orange_discs:
+                state = 3
+            elif blue_discs:
+                state = 4
+            elif green_discs:
+                state = 1
+        print(f"State: {state}")
+
+        # Now act based on state.
+        if state == 0:
+            car.stop()
+        elif state == 1:
+            # Regular movement logic.
+            _, _, _, cam_dist, _, cam_yaw = estimate_circle_pose(green_discs[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
+            car.angular_speed = -heading_pid(cam_yaw)
+            yaw_threshold = 10.0
+            factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
+            car.linear_speed = factor * (-distance_pid(cam_dist))
+        elif state == 2:
+            # In pause state, remain stopped until the timer expires.
+            if current_time < stopped_until:
+                car.stop()
+            else:
+                state = 0  # or resume normal detection/other state transitions
+        elif state == 3:
+            # spin clockwise
+            car.linear_speed = 0.0
+            car.angular_speed = 0.2
+        elif state == 4:
+            # spin counter-clockwise
+            car.linear_speed = 0.0
+            car.angular_speed = -0.2
+
+        cv2.imshow('Vision Sensor Image', frame)
+        cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
 
         if cv2.waitKey(1) & 0xFF == 27:
             break
