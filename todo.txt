@@ -1,0 +1,3 @@
++ Test with octagon and square
+- Find out why panning the camera changes the circle's distance with both approaches, and the aruco's distance with the ref_size approach.
+- Determine whether an ellipse is actually an octagon

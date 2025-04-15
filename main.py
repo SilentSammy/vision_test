@@ -115,54 +115,49 @@ def get_image(vision_sensor_handle):
     return img
 
 def find_ellipses(frame, lower_hsv, upper_hsv):
-    # Convert frame to HSV color space
+    # Find contours that match the specified color
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # Create a mask for colors in the desired range
     mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
-    
-    # Optional: Remove noise with morphological operations.
-    # kernel = np.ones((5, 5), np.uint8)
-    # mask = cv2.erode(mask, kernel, iterations=1)
-    # mask = cv2.dilate(mask, kernel, iterations=2)
-    
-    # Find contours in the mask.
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     ellipses = []
     for cnt in contours:
-        # An ellipse requires at least 5 points.
+        # 1. Filter out polygons with fewer than 5 points.
         if len(cnt) < 5:
             continue
-        
-        # Filter out small contours by area.
-        area = cv2.contourArea(cnt)
-        if area < 50:
+
+        # 2. Fit an ellipse to the contour.
+        ellipse = cv2.fitEllipse(cnt)
+
+        # 3. Filter out small areas
+        ellipse_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        cv2.ellipse(ellipse_mask, ellipse, 255, -1)
+        occluded_area = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
+        if occluded_area < 50:
+            continue
+
+        # 4. Filter out non-elliptical shapes
+        contour_area = cv2.contourArea(cnt)
+        (center_x, center_y), (axis1, axis2), angle = ellipse
+        ellipse_area = math.pi * (axis1/2) * (axis2/2)
+        area_ratio = contour_area / ellipse_area
+        print(area_ratio)
+        if area_ratio < 0.8 or area_ratio > 1.2:
             continue
         
-        # Fit an ellipse to the contour.
-        ellipse = cv2.fitEllipse(cnt)
+        # 5. Add the ellipse to the list.
         ellipses.append(ellipse)
         
-        # Draw the fitted ellipse.
+        # 6. Draw the fitted ellipse.
         cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
-        
-        # Unpack ellipse parameters.
         (center_x, center_y), (major, minor), angle = ellipse
         center = (int(center_x), int(center_y))
-        
-        # Convert angle from degrees to radians.
         theta = math.radians(angle)
-        
-        # Compute endpoints for the major axis.
         major_dx = (major / 2) * math.cos(theta)
         major_dy = (major / 2) * math.sin(theta)
         pt1 = (int(center_x - major_dx), int(center_y - major_dy))
         pt2 = (int(center_x + major_dx), int(center_y + major_dy))
         cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
-        
-        # Compute endpoints for the minor axis.
-        # Minor axis is rotated by 90 degrees relative to major axis.
         theta_minor = theta + math.pi/2  
         minor_dx = (minor / 2) * math.cos(theta_minor)
         minor_dy = (minor / 2) * math.sin(theta_minor)
@@ -432,8 +427,8 @@ def sense1():
     frame = get_image(aru_cam)
     corners, ids = find_arucos(frame)
     if ids is not None and len(corners) > 0:
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, ref_size=0.083984375, fov_x=60, fov_y=60)
-        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
+        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, ref_size=0.083984375, fov_x=60, fov_y=60)
+        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
         print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
 
     cv2.imshow('Vision Sensor Image', frame)
@@ -449,6 +444,7 @@ def sense():
         # Use the first detected ellipse for pose estimation.
         # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, ref_size=0.08438144624233246, fov_x=60, fov_y=60)
         yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
+        # cam_dist *= 1.05
         print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
 
     cv2.imshow('Vision Sensor Image', frame)
