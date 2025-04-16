@@ -118,6 +118,23 @@ def get_image(vision_sensor_handle):
     img = cv2.flip(img, 0)
     return img
 
+def draw_ellipse(frame, ellipse):
+    cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
+    (center_x, center_y), (major, minor), angle = ellipse
+    center = (int(center_x), int(center_y))
+    theta = math.radians(angle)
+    major_dx = (major / 2) * math.cos(theta)
+    major_dy = (major / 2) * math.sin(theta)
+    pt1 = (int(center_x - major_dx), int(center_y - major_dy))
+    pt2 = (int(center_x + major_dx), int(center_y + major_dy))
+    cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
+    theta_minor = theta + math.pi/2  
+    minor_dx = (minor / 2) * math.cos(theta_minor)
+    minor_dy = (minor / 2) * math.sin(theta_minor)
+    pt3 = (int(center_x - minor_dx), int(center_y - minor_dy))
+    pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
+    cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
+
 def find_ellipses(frame, lower_hsv, upper_hsv):
     # Find contours that match the specified color
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -150,23 +167,6 @@ def find_ellipses(frame, lower_hsv, upper_hsv):
         
         # 5. Add the ellipse to the list.
         ellipses.append(ellipse)
-        
-        # 6. Draw the fitted ellipse.
-        cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
-        (center_x, center_y), (major, minor), angle = ellipse
-        center = (int(center_x), int(center_y))
-        theta = math.radians(angle)
-        major_dx = (major / 2) * math.cos(theta)
-        major_dy = (major / 2) * math.sin(theta)
-        pt1 = (int(center_x - major_dx), int(center_y - major_dy))
-        pt2 = (int(center_x + major_dx), int(center_y + major_dy))
-        cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
-        theta_minor = theta + math.pi/2  
-        minor_dx = (minor / 2) * math.cos(theta_minor)
-        minor_dy = (minor / 2) * math.sin(theta_minor)
-        pt3 = (int(center_x - minor_dx), int(center_y - minor_dy))
-        pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
-        cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
     
     return ellipses
 
