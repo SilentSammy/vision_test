@@ -88,25 +88,12 @@ camera_matrix = np.array([[443.4, 0, 256],
                           [0, 443.4, 256],
                           [0, 0, 1]], dtype=np.float32)
 
-# Time
-dt = 0
-start = time.time()
-last = start
-elapsed = 0
-
 # Control
 cam_yaw = 0.0
 heading_pid = PID(Kp=0.02, Ki=0, Kd=0, setpoint=0.0)
 cam_dist = 0.2
 distance_pid = PID(Kp=1, Ki=0, Kd=0, setpoint=cam_dist)
 distance_pid.output_limits = (-0.5, 0.5)
-
-def time_step():
-    global dt, last, elapsed
-    now = time.time()
-    dt = now - last
-    last = now
-    elapsed = now - start
 
 def get_image(vision_sensor_handle):
     sim.handleVisionSensor(vision_sensor_handle)
@@ -291,6 +278,19 @@ def estimate_circle_pose(ellipse, frame, camera_matrix=None, real_diameter=None,
     # return estimated_distance, cam_pitch, cam_yaw
     return yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw
 
+def find_corresponding_ellipse(new_ellipse, old_ellipses, threshold=2.5):
+    new_center = new_ellipse[0]
+    sorted_ellipses = sorted(
+        ((old_ellipse, math.hypot(new_center[0] - old_ellipse[0][0], new_center[1] - old_ellipse[0][1])) 
+         for old_ellipse in old_ellipses),
+        key=lambda item: item[1]
+    )
+    for old_ellipse, dist in sorted_ellipses:
+        major_axis = max(new_ellipse[1])
+        if dist < threshold * major_axis:
+            return old_ellipse
+    return None
+
 # --- Main program ---
 # State 0: Stop
 # State 1: Move towards green disc (green disc detected)
@@ -301,60 +301,83 @@ def estimate_circle_pose(ellipse, frame, camera_matrix=None, real_diameter=None,
 frame = None
 state = 0
 stopped_until = 0.0
+disc_colors = {
+    'green': ((45, 100, 100), (75, 255, 255)),
+    'orange': ((10, 100, 100), (25, 255, 255)),
+    'blue': ((100, 100, 100), (140, 255, 255)),
+    'yellow': ((20, 100, 100), (40, 255, 255))
+}
+disc_ids = {color: 0 for color in disc_colors.keys()}
+old_discs = {color: [] for color in disc_colors.keys()}
+
 try:
     sim.startSimulation()
     while sim.getSimulationState() != sim.simulation_stopped:
-        time_step()
-
-        # See
-        frame = get_image(car_cam)
-        green_discs = find_ellipses(frame.copy(), (45, 100, 100), (75, 255, 255))
-        orange_discs = find_ellipses(frame.copy(), (10, 100, 100), (25, 255, 255))
-        blue_discs = find_ellipses(frame.copy(), (100, 100, 100), (140, 255, 255))
-        yellow_discs = find_ellipses(frame.copy(), (20, 100, 100), (40, 255, 255))
-
-        # In your main simulation loop:
+        # Iteration inputs
         current_time = time.time()
+        frame = get_image(car_cam)
 
-        # Decide state without immediately overwriting state 2 if it's already active.
-        if state != 2:  # Only update state if not already in pause.
-            if not green_discs and not orange_discs and not blue_discs and not yellow_discs:
-                state = 0
-            elif yellow_discs:
-                state = 2
-                stopped_until = current_time + 5.0
-            elif orange_discs:
-                state = 3
-            elif blue_discs:
-                state = 4
-            elif green_discs:
-                state = 1
-        print(f"State: {state}")
+        # Find discs in the image
+        new_discs = {}
+        for color, (lower_hsv, upper_hsv) in disc_colors.items():
+            new_discs[color] = [{'ellipse': e} for e in find_ellipses(frame.copy(), lower_hsv, upper_hsv)]
+        
+        # Find corresponding discs
+        for disc in new_discs['yellow']:
+            corresponding_ellipse = find_corresponding_ellipse(disc['ellipse'], [disc['ellipse'] for disc in old_discs['yellow']], threshold=2.5)
+            corresponding_disc = old_discs['yellow'][[disc['ellipse'] for disc in old_discs['yellow']].index(corresponding_ellipse)] if corresponding_ellipse else None
+            if corresponding_disc is None:
+                disc['id'] = disc_ids['yellow']
+                disc_ids['yellow'] += 1
+            else:
+                disc['id'] = corresponding_disc['id']
+        old_discs['yellow'] = new_discs['yellow']
+
+        # Draw the id on the yellow discs
+        for disc in new_discs['yellow']:
+            center = disc['ellipse'][0]
+            cv2.putText(frame, str(disc['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+        # Update state 
+        # state = 0
+        # if new_yellow_disc or current_time < stopped_until: # if a yellow disc was seen this iteration or the timer is still running
+        #     state = 2
+        # elif orange_discs:
+        #     state = 3
+        # elif blue_discs:
+        #     state = 4
+        # elif green_discs:
+        #     state = 1
+        # print(f"State: {state}")
 
         # Now act based on state.
-        if state == 0:
-            car.stop()
-        elif state == 1:
-            # Regular movement logic.
-            _, _, _, cam_dist, _, cam_yaw = estimate_circle_pose(green_discs[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
-            car.angular_speed = -heading_pid(cam_yaw)
-            yaw_threshold = 10.0
-            factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
-            car.linear_speed = factor * (-distance_pid(cam_dist))
-        elif state == 2:
-            # In pause state, remain stopped until the timer expires.
-            if current_time < stopped_until:
+        if False:
+            if state == 0:
                 car.stop()
-            else:
-                state = 0  # or resume normal detection/other state transitions
-        elif state == 3:
-            # spin clockwise
-            car.linear_speed = 0.0
-            car.angular_speed = 0.2
-        elif state == 4:
-            # spin counter-clockwise
-            car.linear_speed = 0.0
-            car.angular_speed = -0.2
+            elif state == 1:
+                # Regular movement logic.
+                _, _, _, cam_dist, _, cam_yaw = estimate_circle_pose(green_discs[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
+                car.angular_speed = -heading_pid(cam_yaw)
+                yaw_threshold = 10.0
+                factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
+                car.linear_speed = factor * (-distance_pid(cam_dist))
+            elif state == 2:
+                # In pause state, remain stopped until the timer expires.
+                car.stop()
+
+                # if the yellow disc is not in the blacklist, add it to the blacklist
+                if new_yellow_disc not in old_yellow_discs and new_yellow_disc is not None:
+                    old_yellow_discs.append(new_yellow_disc)
+                    stopped_until = current_time + 5.0
+                    print("Timer set to 5 seconds.")
+            elif state == 3:
+                # spin clockwise
+                car.linear_speed = 0.0
+                car.angular_speed = -0.2
+            elif state == 4:
+                # spin counter-clockwise
+                car.linear_speed = 0.0
+                car.angular_speed = 0.2
 
         cv2.imshow('Vision Sensor Image', frame)
         cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
