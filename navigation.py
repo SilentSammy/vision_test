@@ -8,6 +8,8 @@ import cv2
 
 class DifferentialCar:
     def __init__(self, left_wheel=None, right_wheel=None):
+        self._last_time = None  # Initialize last_time to None
+
         # Get wheel handles from the global sim object
         self.left_wheel = left_wheel or sim.getObject('/DynamicLeftJoint')
         self.right_wheel = right_wheel or sim.getObject('/DynamicRightJoint')
@@ -59,6 +61,18 @@ class DifferentialCar:
     def stop(self):
         self.linear_speed = 0.0
         self.angular_speed = 0.0
+    
+    def slow_down(self, damping_factor=1):
+        current_time = time.time()
+        dt = current_time - self._last_time if self._last_time and (current_time - self._last_time) <= 0.5 else 0.0
+        self._last_time = current_time
+        car.linear_speed -= car.linear_speed * damping_factor * dt
+    
+    def spin_down(self, damping_factor=1):
+        current_time = time.time()
+        dt = current_time - self._last_time if self._last_time and (current_time - self._last_time) <= 0.5 else 0.0
+        self._last_time = current_time
+        car.angular_speed -= car.angular_speed * damping_factor * dt
 
 # Monitor key presses
 pressed_keys = set()
@@ -91,9 +105,9 @@ camera_matrix = np.array([[443.4, 0, 256],
 # Control
 cam_yaw = 0.0
 heading_pid = PID(Kp=0.02, Ki=0, Kd=0, setpoint=0.0)
-cam_dist = 0.2
-distance_pid = PID(Kp=1, Ki=0, Kd=0, setpoint=cam_dist)
-distance_pid.output_limits = (-0.5, 0.5)
+cam_dist = 0.32
+distance_pid = PID(Kp=2, Ki=0, Kd=0, setpoint=cam_dist)
+distance_pid.output_limits = (-0.2, 0.2)
 
 def get_image(vision_sensor_handle):
     sim.handleVisionSensor(vision_sensor_handle)
@@ -117,15 +131,21 @@ def find_ellipses(frame, lower_hsv, upper_hsv):
 
         # 2. Fit an ellipse to the contour.
         ellipse = cv2.fitEllipse(cnt)
+        
+        # 3. Check if the ellipse has valid dimensions to avoid raising an (-215:Assertion failed) error.
+        (center_x, center_y), (axis1, axis2), angle = ellipse
+        if axis1 <= 0 or axis2 <= 0:  # Skip invalid ellipses
+            print("Invalid ellipse dimensions:", axis1, axis2)
+            continue
 
-        # 3. Filter out small areas
+        # 4. Filter out small areas
         ellipse_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         cv2.ellipse(ellipse_mask, ellipse, 255, -1)
         occluded_area = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=ellipse_mask))
         if occluded_area < 50:
             continue
 
-        # 4. Filter out non-elliptical shapes
+        # 5. Filter out non-elliptical shapes
         contour_area = cv2.contourArea(cnt)
         (center_x, center_y), (axis1, axis2), angle = ellipse
         ellipse_area = math.pi * (axis1/2) * (axis2/2)
@@ -133,25 +153,8 @@ def find_ellipses(frame, lower_hsv, upper_hsv):
         if area_ratio < 0.8 or area_ratio > 1.2:
             continue
         
-        # 5. Add the ellipse to the list.
+        # 6. Add the ellipse to the list.
         ellipses.append(ellipse)
-        
-        # 6. Draw the fitted ellipse.
-        cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
-        (center_x, center_y), (major, minor), angle = ellipse
-        center = (int(center_x), int(center_y))
-        theta = math.radians(angle)
-        major_dx = (major / 2) * math.cos(theta)
-        major_dy = (major / 2) * math.sin(theta)
-        pt1 = (int(center_x - major_dx), int(center_y - major_dy))
-        pt2 = (int(center_x + major_dx), int(center_y + major_dy))
-        cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
-        theta_minor = theta + math.pi/2  
-        minor_dx = (minor / 2) * math.cos(theta_minor)
-        minor_dy = (minor / 2) * math.sin(theta_minor)
-        pt3 = (int(center_x - minor_dx), int(center_y - minor_dy))
-        pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
-        cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
     
     return ellipses
 
@@ -278,18 +281,30 @@ def estimate_circle_pose(ellipse, frame, camera_matrix=None, real_diameter=None,
     # return estimated_distance, cam_pitch, cam_yaw
     return yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw
 
-def find_corresponding_ellipse(new_ellipse, old_ellipses, threshold=2.5):
+def find_corresponding_ellipse(new_ellipse, old_ellipses, threshold=2.5, relative_to_ellipse=True):
     new_center = new_ellipse[0]
+    major_axis = max(new_ellipse[1])
+
+    # Determine the base threshold
+    base_threshold = major_axis if relative_to_ellipse else 1.0
+
+    # Sort old ellipses by distance to the new ellipse
     sorted_ellipses = sorted(
-        ((old_ellipse, math.hypot(new_center[0] - old_ellipse[0][0], new_center[1] - old_ellipse[0][1])) 
+        ((old_ellipse, math.hypot(new_center[0] - old_ellipse[0][0], new_center[1] - old_ellipse[0][1]))
          for old_ellipse in old_ellipses),
         key=lambda item: item[1]
     )
+
+    # Find the first old ellipse within the threshold
     for old_ellipse, dist in sorted_ellipses:
-        major_axis = max(new_ellipse[1])
-        if dist < threshold * major_axis:
+        if dist < threshold * base_threshold:
             return old_ellipse
     return None
+
+def find_corresponding_disc(new_disc, prev_discs, threshold=2.5, relative_to_ellipse=True):
+    prev_ellipses = [d['ellipse'] for d in prev_discs]
+    corresponding_ellipse = find_corresponding_ellipse(new_disc['ellipse'], prev_ellipses, threshold, relative_to_ellipse)
+    return prev_discs[prev_ellipses.index(corresponding_ellipse)] if corresponding_ellipse is not None else None
 
 # --- Main program ---
 # State 0: Stop
@@ -297,10 +312,11 @@ def find_corresponding_ellipse(new_ellipse, old_ellipses, threshold=2.5):
 # State 2: Pause (yellow disc detected)
 # State 3: Spin clockwise (orange disc detected)
 # State 4: Spin counter-clockwise (blue disc detected)
-
+current_time = time.time()
 frame = None
 state = 0
-stopped_until = 0.0
+stop_until = 0.0
+scan_until = 0.0
 disc_colors = {
     'green': ((45, 100, 100), (75, 255, 255)),
     'orange': ((10, 100, 100), (25, 255, 255)),
@@ -308,7 +324,7 @@ disc_colors = {
     'yellow': ((20, 100, 100), (40, 255, 255))
 }
 disc_ids = {color: 0 for color in disc_colors.keys()}
-old_discs = {color: [] for color in disc_colors.keys()}
+discs = {color: [] for color in disc_colors.keys()}
 
 try:
     sim.startSimulation()
@@ -318,66 +334,103 @@ try:
         frame = get_image(car_cam)
 
         # Find discs in the image
-        new_discs = {}
-        for color, (lower_hsv, upper_hsv) in disc_colors.items():
-            new_discs[color] = [{'ellipse': e} for e in find_ellipses(frame.copy(), lower_hsv, upper_hsv)]
+        new_discs = {color: [{'id': None, 'ignore': False, 'ellipse': e} for e in find_ellipses(frame, lh, uh)] for color, (lh, uh) in disc_colors.items()}
         
-        # Find corresponding discs
-        for disc in new_discs['yellow']:
-            corresponding_ellipse = find_corresponding_ellipse(disc['ellipse'], [disc['ellipse'] for disc in old_discs['yellow']], threshold=2.5)
-            corresponding_disc = old_discs['yellow'][[disc['ellipse'] for disc in old_discs['yellow']].index(corresponding_ellipse)] if corresponding_ellipse else None
-            if corresponding_disc is None:
-                disc['id'] = disc_ids['yellow']
-                disc_ids['yellow'] += 1
-            else:
-                disc['id'] = corresponding_disc['id']
-        old_discs['yellow'] = new_discs['yellow']
+        # Find corresponding discs for all colors
+        for color in disc_colors.keys():
+            # Create a list of previous discs of this color
+            prev_discs = discs[color].copy()
+            for new_disc in new_discs[color]:
+                corresponding_disc = find_corresponding_disc(new_disc, prev_discs, threshold=frame.shape[1]*0.2, relative_to_ellipse=False)
+                if corresponding_disc is not None: # It's a previously seen disc
+                    new_disc['id'] = corresponding_disc['id'] # update its id in the new list
+                    discs[color][discs[color].index(corresponding_disc)]['ellipse'] = new_disc['ellipse'] # update the ellipse in the old list
+                    prev_discs.remove(corresponding_disc) # remove it so we don't match it again
+                else: # It's a new disc
+                    new_disc['id'] = disc_ids[color]
+                    disc_ids[color] += 1
+                    discs[color].append(new_disc)
+            # Optionally, remove discs that have left the field of view
+            discs[color] = [d for d in discs[color] if d['id'] in (d['id'] for d in new_discs[color])]
 
-        # Draw the id on the yellow discs
-        for disc in new_discs['yellow']:
-            center = disc['ellipse'][0]
-            cv2.putText(frame, str(disc['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        # Draw the id on the discs
+        for color in disc_colors.keys():
+            for new_disc in discs[color]:
+                center = new_disc['ellipse'][0]
+                text_color = (0, 0, 0) if new_disc['ignore'] else (255, 255, 255)
+                cv2.putText(frame, str(new_disc['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
+        
+        # Get the most recent disc that is not ignored for each color
+        yellow_disc = max((d for d in discs['yellow'] if not d['ignore']), key=lambda d: d['id'], default=None)
+        green_disc = max((d for d in discs['green'] if not d['ignore']), key=lambda d: d['id'], default=None)
+        orange_disc = max((d for d in discs['orange'] if not d['ignore']), key=lambda d: d['id'], default=None)
+        blue_disc = max((d for d in discs['blue'] if not d['ignore']), key=lambda d: d['id'], default=None)
 
-        # Update state 
-        # state = 0
-        # if new_yellow_disc or current_time < stopped_until: # if a yellow disc was seen this iteration or the timer is still running
-        #     state = 2
-        # elif orange_discs:
-        #     state = 3
-        # elif blue_discs:
-        #     state = 4
-        # elif green_discs:
-        #     state = 1
-        # print(f"State: {state}")
+        # Update state
+        if yellow_disc or current_time < stop_until: # if a yellow disc was seen this iteration or the timer is still running
+            state = 2
+        elif orange_disc or (state == 3 and current_time < scan_until and not green_disc): # if an orange disc was seen this iteration or the timer is still running and no green disc was seen
+            state = 3
+        elif blue_disc or (state == 4 and current_time < scan_until and not green_disc): # if a blue disc was seen this iteration or the timer is still running and no green disc was seen
+            state = 4
+        elif green_disc:
+            state = 1
+        else:
+            state = 0
 
         # Now act based on state.
-        if False:
-            if state == 0:
-                car.stop()
-            elif state == 1:
-                # Regular movement logic.
-                _, _, _, cam_dist, _, cam_yaw = estimate_circle_pose(green_discs[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
-                car.angular_speed = -heading_pid(cam_yaw)
-                yaw_threshold = 10.0
-                factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
-                car.linear_speed = factor * (-distance_pid(cam_dist))
-            elif state == 2:
-                # In pause state, remain stopped until the timer expires.
-                car.stop()
+        if state == 0:
+            # Decelerate smoothly
+            car.slow_down(2)
+            car.spin_down(2)
+            
+            print("State 0: Awaiting disc detection")
+        elif state == 1:
+            # Regular movement logic.
+            _, _, _, cam_dist, _, cam_yaw = estimate_circle_pose(green_disc['ellipse'], frame, camera_matrix=camera_matrix, real_diameter=0.1)
+            car.angular_speed = -heading_pid(cam_yaw)
+            yaw_threshold = 10.0
+            factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
+            car.linear_speed = factor * (-distance_pid(cam_dist))
 
-                # if the yellow disc is not in the blacklist, add it to the blacklist
-                if new_yellow_disc not in old_yellow_discs and new_yellow_disc is not None:
-                    old_yellow_discs.append(new_yellow_disc)
-                    stopped_until = current_time + 5.0
-                    print("Timer set to 5 seconds.")
-            elif state == 3:
-                # spin clockwise
-                car.linear_speed = 0.0
-                car.angular_speed = -0.2
-            elif state == 4:
-                # spin counter-clockwise
-                car.linear_speed = 0.0
-                car.angular_speed = 0.2
+            print("State 1: Moving towards green disc")
+        elif state == 2:
+            # Decelerate smoothly
+            car.slow_down(2)
+            car.spin_down(2)
+
+            # ignore the yellow disc
+            if yellow_disc:
+                yellow_disc['ignore'] = True
+                stop_until = current_time + 5.0
+            
+            print(f"State 2: Stopped for {stop_until - current_time:.2f} s")
+        elif state == 3:
+            # spin clockwise
+            car.linear_speed = 0.0
+            car.angular_speed = -math.radians(30)
+
+            # ignore the discs and set the timer
+            if orange_disc:
+                orange_disc['ignore'] = True
+                if green_disc:
+                    green_disc['ignore'] = True
+                scan_until = current_time + 9.0
+            
+            print(f"State 3: Scanning clockwise for {scan_until - current_time:.2f} s")
+        elif state == 4:
+            # spin counter-clockwise
+            car.linear_speed = 0.0
+            car.angular_speed = math.radians(30)
+
+            # ignore the disc and set the timer
+            if blue_disc:
+                blue_disc['ignore'] = True
+                if green_disc:
+                    green_disc['ignore'] = True
+                scan_until = current_time + 9.0
+            
+            print(f"State 4: Scanning counter-clockwise for {scan_until - current_time:.2f} s")
 
         cv2.imshow('Vision Sensor Image', frame)
         cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
