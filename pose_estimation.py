@@ -1,121 +1,6 @@
-from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-from pynput import keyboard
-from simple_pid import PID
 import numpy as np
-import time
 import math
 import cv2
-
-class DifferentialCar:
-    def __init__(self, left_wheel=None, right_wheel=None):
-        # Get wheel handles from the global sim object
-        self.left_wheel = left_wheel or sim.getObject('/DynamicLeftJoint')
-        self.right_wheel = right_wheel or sim.getObject('/DynamicRightJoint')
-        
-        # Internal speeds (m/s and rad/s)
-        self._linear_speed = 0.0
-        self._angular_speed = 0.0
-
-        # Differential car constants
-        self.nominalLinearVelocity = 0.3    # nominal linear speed (m/s)
-        self.wheelRadius = 0.027            # wheel radius (m)
-        self.interWheelDistance = 0.119     # distance between wheels (m)
-        
-        # Apply initial wheel speeds
-        self._update_wheel_velocities()
-
-    def _update_wheel_velocities(self):
-        left_speed = (self._linear_speed - (self._angular_speed * self.interWheelDistance / 2)) / self.wheelRadius
-        right_speed = (self._linear_speed + (self._angular_speed * self.interWheelDistance / 2)) / self.wheelRadius
-        
-        # Convert to Python float to avoid serialization issues.
-        left_speed = float(left_speed)
-        right_speed = float(right_speed)
-        
-        # Batch update using stepping
-        client.setStepping(True)
-        sim.setJointTargetVelocity(self.left_wheel, left_speed)
-        sim.setJointTargetVelocity(self.right_wheel, right_speed)
-        client.setStepping(False)
-
-    @property
-    def linear_speed(self):
-        return self._linear_speed
-    
-    @linear_speed.setter
-    def linear_speed(self, value):
-        self._linear_speed = value
-        self._update_wheel_velocities()
-    
-    @property
-    def angular_speed(self):
-        return self._angular_speed
-    
-    @angular_speed.setter
-    def angular_speed(self, value):
-        self._angular_speed = value
-        self._update_wheel_velocities()
-
-    def stop(self):
-        self.linear_speed = 0.0
-        self.angular_speed = 0.0
-
-# Monitor key presses
-pressed_keys = set()
-toggles = {}
-def is_toggled(key):
-    if key not in toggles:
-        toggles[key] = False
-    return toggles.get(key, False)
-def on_press(key):
-    key_repr = key.char if hasattr(key, 'char') else str(key)
-    pressed_keys.add(key_repr)
-    if key_repr in toggles:
-        toggles[key_repr] = not toggles[key_repr]
-def on_release(key):
-    pressed_keys.discard(key.char if hasattr(key, 'char') else str(key))
-keyboard.Listener(on_press=on_press, on_release=on_release).start()
-
-# Connect and get simulator objects
-client = RemoteAPIClient('localhost', 23000)
-sim = client.getObject('sim')
-car_cam = sim.getObject('/LineTracer/visionSensor')
-test_cam = sim.getObject('/visionSensor')
-car = DifferentialCar()
-
-# Camera parameters
-dist_coeffs = np.zeros((5, 1), dtype=np.float32)
-camera_matrix = np.array([[443.4, 0, 256],
-                          [0, 443.4, 256],
-                          [0, 0, 1]], dtype=np.float32)
-
-# Time
-dt = 0
-start = time.time()
-last = start
-elapsed = 0
-
-# Control
-cam_yaw = 0.0
-heading_pid = PID(Kp=0.02, Ki=0, Kd=0, setpoint=0.0)
-cam_dist = 0.2
-distance_pid = PID(Kp=1, Ki=0, Kd=0, setpoint=cam_dist)
-distance_pid.output_limits = (-0.5, 0.5)
-
-def time_step():
-    global dt, last, elapsed
-    now = time.time()
-    dt = now - last
-    last = now
-    elapsed = now - start
-
-def get_image(vision_sensor_handle):
-    sim.handleVisionSensor(vision_sensor_handle)
-    img, resolution = sim.getVisionSensorImg(vision_sensor_handle)
-    img = np.frombuffer(img, dtype=np.uint8).reshape((resolution[1], resolution[0], 3))
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    img = cv2.flip(img, 0)
-    return img
 
 def draw_ellipse(frame, ellipse):
     cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
@@ -134,6 +19,153 @@ def draw_ellipse(frame, ellipse):
     pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
     cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
 
+# SQUARES
+def find_quadrilaterals(frame, lower_hsv, upper_hsv):
+    """
+    Finds quadrilaterals in the given frame based on the specified HSV color range.
+
+    Parameters:
+        frame: The input image frame.
+        lower_hsv: Lower bound of the HSV color range.
+        upper_hsv: Upper bound of the HSV color range.
+
+    Returns:
+        A list of quadrilaterals, where each quadrilateral is represented as a list of 4 points.
+    """
+    # Convert the frame to HSV color space
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    quadrilaterals = []
+    for cnt in contours:
+        # 1. Filter out small contours by area
+        if cv2.contourArea(cnt) < 100:
+            continue
+
+        # 2. Approximate the contour to a polygon
+        epsilon = 0.02 * cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, epsilon, True)
+
+        # 3. Check if the polygon has 4 vertices and is convex
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            quadrilaterals.append(approx)
+
+    return quadrilaterals
+
+def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, square_length):
+    """
+    Estimates the pose of a square given its detected corners. This function assumes that
+    square_corners is of shape (1, 4, 2) (e.g. from find_quadrilaterals) and that the square's
+    side length (in meters) is known.
+    
+    It returns a tuple:
+       (yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw)
+    where yaw, pitch, roll are in degrees, estimated_distance is the distance from the camera,
+    and cam_pitch and cam_yaw are angular offsets computed from the marker's center.
+
+    This version uses cv2.solvePnP and skips the custom (ref_size) approach.
+    """
+    def order_points(pts):
+        """
+        Orders a set of 4 points in the following order:
+        top-left, top-right, bottom-right, bottom-left
+
+        Parameters:
+        pts: A numpy array of shape (4,2).
+
+        Returns:
+        A numpy array of shape (4,2) with the points ordered.
+        """
+        pts = pts.reshape(4, 2)
+        ordered = np.zeros((4, 2), dtype=np.float32)
+        # the top-left point has the smallest sum,
+        # bottom-right has the largest sum.
+        s = pts.sum(axis=1)
+        ordered[0] = pts[np.argmin(s)]
+        ordered[2] = pts[np.argmax(s)]
+
+        # the top-right point has the smallest difference,
+        # bottom-left has the largest difference.
+        diff = np.diff(pts, axis=1)  # y - x
+        ordered[1] = pts[np.argmin(diff)]
+        ordered[3] = pts[np.argmax(diff)]
+        return ordered
+    
+    def rotationMatrixToEulerAngles(R):
+        """
+        Converts a rotation matrix to Euler angles (roll, pitch, yaw) using the Tait–Bryan angles convention.
+        Returns a numpy array [roll, pitch, yaw] in radians.
+        """
+        sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
+        singular = sy < 1e-6
+        if not singular:
+            roll  = math.atan2(R[2, 1], R[2, 2])
+            pitch = math.atan2(-R[2, 0], sy)
+            yaw   = math.atan2(R[1, 0], R[0, 0])
+        else:
+            roll  = math.atan2(-R[1, 2], R[1, 1])
+            pitch = math.atan2(-R[2, 0], sy)
+            yaw   = 0
+        return np.array([roll, pitch, yaw])
+
+    # Get image dimensions.
+    h, w, _ = frame.shape
+
+    # Define 3D object points for the square.
+    # Here we assume the square lies in the z=0 plane and its corners are at:
+    # (0, 0, 0); (square_length, 0, 0); (square_length, square_length, 0); (0, square_length, 0)
+    # You may adjust this ordering based on your desired coordinate system.
+    obj_points = np.array([
+        [0, 0, 0],
+        [square_length, 0, 0],
+        [square_length, square_length, 0],
+        [0, square_length, 0]
+    ], dtype=np.float32)
+
+    # Ensure points are in the correct format for solvePnP.
+    s = square_corners
+    s = s.astype(np.float32)
+    s = s.reshape(1, 4, 2)
+    s = s[:, :, ::-1]
+    img_points = s.reshape(4, 2)
+    img_points = order_points(square_corners.reshape(4, 2))
+
+    # Solve the PnP problem.
+    retval, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
+    if not retval:
+        return None
+
+    # Convert rvec to rotation matrix and then to Euler angles.
+    R, _ = cv2.Rodrigues(rvec)
+    euler_rad = rotationMatrixToEulerAngles(R)
+    euler_deg = np.degrees(euler_rad)
+    # Map the angles (this mapping can be adjusted to your preferred convention)
+    yaw = euler_deg[1]
+    pitch = euler_deg[0]
+    roll = euler_deg[2]
+
+    # Estimated distance is the norm of the translation vector.
+    estimated_distance = np.linalg.norm(tvec)
+
+    # Compute the square center in image coordinates.
+    marker_center = np.mean(img_points, axis=0)
+    cx = camera_matrix[0, 2]
+    cy = camera_matrix[1, 2]
+    offset_x = marker_center[0] - cx
+    offset_y = marker_center[1] - cy
+
+    # Compute FOV angles.
+    fx = camera_matrix[0, 0]
+    fy = camera_matrix[1, 1]
+    fov_x = math.degrees(2 * math.atan(w / (2 * fx)))
+    fov_y = math.degrees(2 * math.atan(h / (2 * fy)))
+    cam_yaw = (offset_x / (w / 2)) * (fov_x / 2)
+    cam_pitch = (offset_y / (h / 2)) * (fov_y / 2)
+
+    return yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw
+
+# CIRCLES
 def find_ellipses(frame, lower_hsv, upper_hsv):
     # Find contours that match the specified color
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -290,7 +322,7 @@ def estimate_circle_pose(ellipse, frame, camera_matrix=None, real_diameter=None,
     offset_y = center_y - cy
     
     # Convert these pixel offsets to angular offsets.
-    cam_yaw = -(offset_x / (w / 2)) * (fov_x / 2)
+    cam_yaw = (offset_x / (w / 2)) * (fov_x / 2)
     cam_pitch = (offset_y / (h / 2)) * (fov_y / 2)
     
     yaw, pitch, roll = estimate_circle_orientation(ellipse)
@@ -318,6 +350,7 @@ def find_corresponding_ellipse(new_ellipse, old_ellipses, threshold=2.5, relativ
             return old_ellipse
     return None
 
+# ARUCO MARKERS
 def find_arucos(frame):
     # Detect markers
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -404,7 +437,7 @@ def estimate_marker_pose(marker_corners, frame, camera_matrix=None, dist_coeffs=
     euler_deg = np.degrees(euler_rad)
     # Mapping convention:
     yaw = euler_deg[1]
-    new_pitch = ((180 - euler_deg[0] + 180) % 360) - 180  # adjusted pitch
+    new_pitch = -((180 - euler_deg[0] + 180) % 360) - 180  # adjusted pitch
     roll = euler_deg[2]
 
     # Determine distance.
@@ -445,74 +478,8 @@ def estimate_marker_pose(marker_corners, frame, camera_matrix=None, dist_coeffs=
     offset_x = marker_center[0] - cx
     offset_y = marker_center[1] - cy
     # Convert pixel offsets to angular offsets: half image width corresponds to half fov_x, etc.
-    cam_yaw = -(offset_x / (w / 2)) * (fov_x / 2)
+    cam_yaw = (offset_x / (w / 2)) * (fov_x / 2)
     cam_pitch = (offset_y / (h / 2)) * (fov_y / 2)
 
     return (yaw, new_pitch, roll, estimated_distance, cam_pitch, cam_yaw)
 
-def sense1():
-    global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
-    frame = get_image(aru_cam)
-    corners, ids = find_arucos(frame)
-    if ids is not None and len(corners) > 0:
-        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, ref_size=0.083984375, fov_x=60, fov_y=60)
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(corners[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
-        print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
-
-    cv2.imshow('Vision Sensor Image', frame)
-    cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
-
-def sense():
-    global frame, cam_pitch, cam_yaw, yaw, pitch, roll, cam_dist
-    lower_green = (45, 100, 100)
-    upper_green = (75, 255, 255)
-    frame = get_image(disc_cam)
-    ellipses = find_ellipses(frame, lower_green, upper_green)
-    if ellipses:
-        # Use the first detected ellipse for pose estimation.
-        # yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, ref_size=0.08438144624233246, fov_x=60, fov_y=60)
-        yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_circle_pose(ellipses[0], frame, camera_matrix=camera_matrix, real_diameter=0.1)
-        # cam_dist *= 1.05
-        print(f"Z:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
-
-    cv2.imshow('Vision Sensor Image', frame)
-    cv2.setWindowProperty('Vision Sensor Image', cv2.WND_PROP_TOPMOST, 1)
-
-def actuate():
-    max_linear_speed = 0.5
-    max_angular_speed = math.radians(30)
-    yaw_threshold = 10
-
-    if is_toggled('m'):
-        car.angular_speed = heading_pid(cam_yaw)
-        factor = max(0, 1 - (abs(cam_yaw) / yaw_threshold))
-        car.linear_speed = factor * (-distance_pid(cam_dist))
-    else:
-        car.angular_speed = max_angular_speed if 'a' in pressed_keys else -max_angular_speed if 'd' in pressed_keys else 0
-        car.linear_speed = max_linear_speed if 'w' in pressed_keys else -max_linear_speed if 's' in pressed_keys else 0
-
-def screenshot_and_exit():
-    frame = get_image(aru_cam)
-    cv2.imshow('Vision Sensor Image', frame)
-    cv2.imwrite('resources/last_frame.png', frame)
-    cv2.waitKey(1000)
-    raise SystemExit
-
-# --- Main program ---
-frame = None
-
-# screenshot_and_exit()
-
-try:
-    sim.startSimulation()
-    while sim.getSimulationState() != sim.simulation_stopped:
-        time_step()
-
-        sense()
-
-        actuate()
-
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
-finally:
-    sim.stopSimulation()
