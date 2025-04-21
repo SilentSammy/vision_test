@@ -37,19 +37,38 @@ def screenshot_and_exit(cam_handle):
     cv2.waitKey(1000)
     raise SystemExit
 
-def combine_angles(cam_angle, object_angle):
+def unroll_offsets(offset_x, offset_y, roll_deg):
+    # Convert roll angle to radians.
+    roll_rad = math.radians(roll_deg)  # use positive roll
+    # Build the 2D rotation matrix for roll.
+    cos_r = math.cos(roll_rad)
+    sin_r = math.sin(roll_rad)
+    # Rotate the (offset_x, offset_y) vector.
+    x_unrolled = offset_x * cos_r - offset_y * sin_r
+    y_unrolled = offset_x * sin_r + offset_y * cos_r
+    return x_unrolled, y_unrolled
+
+def unroll_angle_offsets(yaw_deg, pitch_deg, roll_deg):
     """
-    Combines the camera’s translation-derived angle and the object's rotation-derived angle.
-    If either signal is near zero then we consider that there’s no rotation.
-    Otherwise, we return a value whose magnitude is the smaller of the two,
-    but whose sign is taken from the object's rotation-derived angle.
+    Given angular offsets (e.g. cam_yaw, cam_pitch) in degrees and a roll angle, 
+    rotates the (yaw, pitch) vector by -roll so that the roll’s influence is removed.
     
-    This ensures that if the camera or marker rotate oppositely the result will have the correct sign.
+    Returns:
+        A tuple (unrolled_yaw, unrolled_pitch) in degrees.
     """
-    if abs(cam_angle) < 1e-6 or abs(object_angle) < 1e-6:
-        return 0.0
-    # Use the smaller magnitude and the sign of the object's angle.
-    return math.copysign(min(abs(cam_angle), abs(object_angle)), object_angle)
+    # Convert to radians.
+    yaw_rad = math.radians(yaw_deg)
+    pitch_rad = math.radians(pitch_deg)
+    roll_rad = math.radians(roll_deg)
+    
+    # Apply 2D rotation: we rotate the vector (yaw_rad, pitch_rad) by -roll_rad.
+    unrolled_yaw_rad = math.cos(-roll_rad)*yaw_rad - math.sin(-roll_rad)*pitch_rad
+    unrolled_pitch_rad = math.sin(-roll_rad)*yaw_rad + math.cos(-roll_rad)*pitch_rad
+    
+    # Convert back to degrees.
+    unrolled_yaw = math.degrees(unrolled_yaw_rad)
+    unrolled_pitch = math.degrees(unrolled_pitch_rad)
+    return unrolled_yaw, unrolled_pitch
 
 # --- Main program ---
 frame = None
@@ -67,6 +86,9 @@ try:
 
         if markers:
             yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(markers[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
+            cam_yaw, cam_pitch = unroll_angle_offsets(cam_yaw, cam_pitch, roll)
+            # yaw, pitch = unroll_angle_offsets(yaw, pitch, roll)
+
             print(f"ARUCO\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
 
             # Use polar coordinates to determine the camera's position
@@ -75,16 +97,18 @@ try:
             y = cam_dist * math.cos(pitch_rad) * math.sin(yaw_rad)  # rightward displacement
             x = cam_dist * math.sin(pitch_rad)                      # forward displacement
             z = cam_dist * math.cos(pitch_rad) * math.cos(yaw_rad)  # upward displacement
+            # x, y = unroll_offsets(x, y, roll)
             move_object(cone, x=x, y=y, z=z)
 
             # Determine the camera's orientation
-            # combined_pitch = combine_angles(cam_pitch, -pitch)  # note the sign: often the object pitch comes out with opposite sign
-            # combined_yaw   = combine_angles(cam_yaw, yaw)
             alpha = math.radians(yaw)
             beta = math.radians(pitch)
             gamma = 0
             orient_object(cone, alpha=alpha, beta=beta, gamma=gamma)
             
+            # Print the camera pose
+            # print(f"CAM\tX: {x:.2f}\tY:{y:.2f}\tZ:{z:.2f}\tYaw:{math.degrees(alpha):.2f}\tPit:{math.degrees(beta):.2f}\tRol:{math.degrees(gamma):.2f}\n")
+
         # Draw the detected squares
         for square in squares:
             cv2.polylines(frame, [square], isClosed=True, color=(255, 255, 255), thickness=2)
