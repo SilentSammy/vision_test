@@ -437,7 +437,8 @@ def estimate_marker_pose(marker_corners, frame, camera_matrix=None, dist_coeffs=
     euler_deg = np.degrees(euler_rad)
     # Mapping convention:
     yaw = euler_deg[1]
-    new_pitch = -((180 - euler_deg[0] + 180) % 360) - 180  # adjusted pitch
+    new_pitch = ((180 - euler_deg[0] + 180) % 360) - 180  # adjusted pitch
+    new_pitch = -new_pitch  # Invert pitch for camera perspective
     roll = euler_deg[2]
 
     # Determine distance.
