@@ -484,3 +484,38 @@ def estimate_marker_pose(marker_corners, frame, camera_matrix=None, dist_coeffs=
 
     return (yaw, new_pitch, roll, estimated_distance, cam_pitch, cam_yaw)
 
+# CAMERA
+def estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw):
+    def unroll_angle_offsets(yaw_deg, pitch_deg, roll_deg):
+        """
+        Given angular offsets (e.g. cam_yaw, cam_pitch) in degrees and a roll angle, 
+        rotates the (yaw, pitch) vector by -roll so that the roll’s influence is removed.
+        
+        Returns:
+            A tuple (unrolled_yaw, unrolled_pitch) in degrees.
+        """
+        # Convert to radians.
+        yaw_rad = math.radians(yaw_deg)
+        pitch_rad = math.radians(pitch_deg)
+        roll_rad = math.radians(roll_deg)
+        
+        # Apply 2D rotation: we rotate the vector (yaw_rad, pitch_rad) by -roll_rad.
+        unrolled_yaw_rad = math.cos(-roll_rad)*yaw_rad - math.sin(-roll_rad)*pitch_rad
+        unrolled_pitch_rad = math.sin(-roll_rad)*yaw_rad + math.cos(-roll_rad)*pitch_rad
+        
+        # Convert back to degrees.
+        unrolled_yaw = math.degrees(unrolled_yaw_rad)
+        unrolled_pitch = math.degrees(unrolled_pitch_rad)
+        return unrolled_yaw, unrolled_pitch
+
+    cam_yaw, cam_pitch = unroll_angle_offsets(cam_yaw, cam_pitch, roll)
+    yaw_rad = math.radians(cam_yaw-yaw)
+    pitch_rad = math.radians(cam_pitch+pitch)
+    y = cam_dist * math.cos(pitch_rad) * math.sin(yaw_rad)  # rightward displacement
+    x = cam_dist * math.sin(pitch_rad)                      # forward displacement
+    z = cam_dist * math.cos(pitch_rad) * math.cos(yaw_rad)  # upward displacement
+    alpha = math.radians(yaw)
+    beta = math.radians(pitch)
+    gamma = 0
+
+    return x, y, z, alpha, beta, gamma

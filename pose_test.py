@@ -5,7 +5,7 @@ import numpy as np
 import time
 import math
 import cv2
-from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals
+from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose
 from sim_tools import orient_object, move_object, sim, get_image
 
 # Connect and get simulator objects
@@ -40,65 +40,52 @@ def unroll_offsets(offset_x, offset_y, roll_deg):
     y_unrolled = offset_x * sin_r + offset_y * cos_r
     return x_unrolled, y_unrolled
 
-def unroll_angle_offsets(yaw_deg, pitch_deg, roll_deg):
-    """
-    Given angular offsets (e.g. cam_yaw, cam_pitch) in degrees and a roll angle, 
-    rotates the (yaw, pitch) vector by -roll so that the roll’s influence is removed.
-    
-    Returns:
-        A tuple (unrolled_yaw, unrolled_pitch) in degrees.
-    """
-    # Convert to radians.
-    yaw_rad = math.radians(yaw_deg)
-    pitch_rad = math.radians(pitch_deg)
-    roll_rad = math.radians(roll_deg)
-    
-    # Apply 2D rotation: we rotate the vector (yaw_rad, pitch_rad) by -roll_rad.
-    unrolled_yaw_rad = math.cos(-roll_rad)*yaw_rad - math.sin(-roll_rad)*pitch_rad
-    unrolled_pitch_rad = math.sin(-roll_rad)*yaw_rad + math.cos(-roll_rad)*pitch_rad
-    
-    # Convert back to degrees.
-    unrolled_yaw = math.degrees(unrolled_yaw_rad)
-    unrolled_pitch = math.degrees(unrolled_pitch_rad)
-    return unrolled_yaw, unrolled_pitch
-
-def estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw):
-    cam_yaw, cam_pitch = unroll_angle_offsets(cam_yaw, cam_pitch, roll)
-    yaw_rad = math.radians(cam_yaw-yaw)
-    pitch_rad = math.radians(cam_pitch+pitch)
-    y = cam_dist * math.cos(pitch_rad) * math.sin(yaw_rad)  # rightward displacement
-    x = cam_dist * math.sin(pitch_rad)                      # forward displacement
-    z = cam_dist * math.cos(pitch_rad) * math.cos(yaw_rad)  # upward displacement
-    alpha = math.radians(yaw)
-    beta = math.radians(pitch)
-    gamma = 0
-
-    return x, y, z, alpha, beta, gamma
-
 # --- Main program ---
-frame = None
+ref_objs = [
+    {'lh': (60, 200, 200), 'uh': (60, 255, 255), 'x': 0.0, 'y': 0.0},  # Pure green (lower tolerance)
+    {'lh': (0, 150, 150), 'uh': (10, 255, 255), 'x': -0.8, 'y': -0.8},  # Pure red
+    {'lh': (110, 150, 150), 'uh': (130, 255, 255), 'x': 0.8, 'y': -0.8},  # Pure blue
+    {'lh': (15, 100, 100), 'uh': (25, 255, 255), 'x': 0.8, 'y': 0.8},  # Orange
+    {'lh': (140, 100, 100), 'uh': (160, 255, 255), 'x': -0.8, 'y': 0.8}  # Magenta
+]
+
 try:
     sim.startSimulation()
     while sim.getSimulationState() != sim.simulation_stopped:
         frame = get_image(test_cam)
 
-        # Find green squares and ARUCO markers
-        squares = find_quadrilaterals(frame, lower_hsv=(45, 100, 100), upper_hsv=(75, 255, 255))
-        markers, _ = find_arucos(frame)
+        # Find ARUCO markers
+        markers, aru_ids = find_arucos(frame)
+        # markers = zip(aru_ids, markers)
+
+        # Find squares
+        squares = []
+        for idx, ref_obj in enumerate(ref_objs):
+            sqrs = find_quadrilaterals(frame, lower_hsv=ref_obj['lh'], upper_hsv=ref_obj['uh'])
+            if sqrs:
+                squares.append((idx, sqrs[0]))
 
         # Attempt to determine the camera pose based on the detected markers or squares (assuming the marker is at the origin, facing upward)
         cam_pose = None
         if markers:
-            yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(markers[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.1)
+            yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(markers[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.2)
             print(f"ARUCO\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
             cam_pose = estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw)
         elif squares:
-            yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_square_pose(squares[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, square_length=0.1)
-            print(f"SQUARE\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
+            # Choose the closest square to the camera
+            square_poses = [ (sqr_id, quad, *estimate_square_pose(quad, frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, square_length=0.2)) for sqr_id, quad in squares ]
+            square_poses.sort(key=lambda x: x[5])  # Sort by cam_dist (5th element)
+            sqr_idx, quad, yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = square_poses[0]
+
+            # Estimate the camera pose based on the square
+            print(f"SQUARE {sqr_idx}\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
+            cv2.polylines(frame, [quad], isClosed=True, color=(255, 255, 255), thickness=2)
             cam_pose = estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw)
-            for square in squares: # Draw the detected squares
-                cv2.polylines(frame, [square], isClosed=True, color=(255, 255, 255), thickness=2)
-        
+            x_off, y_off = ref_objs[sqr_idx]['x'], ref_objs[sqr_idx]['y']
+            cam_pose = list(cam_pose)  # Convert to list for modification
+            cam_pose[0] += x_off
+            cam_pose[1] += y_off
+
         # Visualize the estimated camera pose in the simulation
         if cam_pose:
             x, y, z, alpha, beta, gamma = cam_pose
