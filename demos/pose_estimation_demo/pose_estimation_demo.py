@@ -1,7 +1,5 @@
 import sys, os
-root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if root_dir not in sys.path:
-    sys.path.insert(0, root_dir)
+sys.path[:0] = [os.path.abspath(os.path.join(os.path.dirname(__file__), p)) for p in ('..', '../..')]
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 from pynput import keyboard
 from simple_pid import PID
