@@ -19,6 +19,37 @@ def draw_ellipse(frame, ellipse):
     pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
     cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
 
+def find_corresponding_point(new_point, old_points, threshold):
+    """
+    Returns the first old point that is within the absolute pixel distance 'threshold'
+    from new_point. If none is found, returns None.
+    
+    Parameters:
+        new_point: A sequence (x, y) representing the new point.
+        old_points: An iterable of points (each as a sequence (x, y)) to search through.
+        threshold: Absolute pixel distance threshold (float or int).
+    
+    Returns:
+        A point from old_points that is within the threshold distance of new_point or
+        None if no such point exists.
+    """
+    # Compute distances from new_point to each old point
+    corresponding = sorted(
+        ((pt, ((new_point[0]-pt[0])**2 + (new_point[1]-pt[1])**2)**0.5) for pt in old_points),
+        key=lambda item: item[1]
+    )
+    
+    for pt, dist in corresponding:
+        if dist < threshold:
+            return pt
+    return None
+
+def draw_quad(frame, quad):
+    cv2.polylines(frame, [quad], isClosed=True, color=(255, 255, 255), thickness=4)
+    # draw red dot on the first point
+    pt = tuple(quad[0][0])
+    cv2.circle(frame, pt, 5, (0, 0, 255), -1)
+
 # SQUARES
 def find_quadrilaterals(frame, lower_hsv, upper_hsv):
     """

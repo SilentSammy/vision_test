@@ -9,6 +9,74 @@ import cv2
 client = RemoteAPIClient('localhost', 23000)
 sim = client.getObject('sim')
 
+class DifferentialCar:
+    def __init__(self, left_wheel=None, right_wheel=None):
+        self._last_time = None  # Initialize last_time to None
+
+        # Get wheel handles from the global sim object
+        self.left_wheel = left_wheel or sim.getObject('/DynamicLeftJoint')
+        self.right_wheel = right_wheel or sim.getObject('/DynamicRightJoint')
+        
+        # Internal speeds (m/s and rad/s)
+        self._linear_speed = 0.0
+        self._angular_speed = 0.0
+
+        # Differential car constants
+        self.nominalLinearVelocity = 0.3    # nominal linear speed (m/s)
+        self.wheelRadius = 0.027            # wheel radius (m)
+        self.interWheelDistance = 0.119     # distance between wheels (m)
+        
+        # Apply initial wheel speeds
+        self._update_wheel_velocities()
+
+    def _update_wheel_velocities(self):
+        left_speed = (self._linear_speed - (self._angular_speed * self.interWheelDistance / 2)) / self.wheelRadius
+        right_speed = (self._linear_speed + (self._angular_speed * self.interWheelDistance / 2)) / self.wheelRadius
+        
+        # Convert to Python float to avoid serialization issues.
+        left_speed = float(left_speed)
+        right_speed = float(right_speed)
+        
+        # Batch update using stepping
+        client.setStepping(True)
+        sim.setJointTargetVelocity(self.left_wheel, left_speed)
+        sim.setJointTargetVelocity(self.right_wheel, right_speed)
+        client.setStepping(False)
+
+    @property
+    def linear_speed(self):
+        return self._linear_speed
+    
+    @linear_speed.setter
+    def linear_speed(self, value):
+        self._linear_speed = value
+        self._update_wheel_velocities()
+    
+    @property
+    def angular_speed(self):
+        return self._angular_speed
+    
+    @angular_speed.setter
+    def angular_speed(self, value):
+        self._angular_speed = value
+        self._update_wheel_velocities()
+
+    def stop(self):
+        self.linear_speed = 0.0
+        self.angular_speed = 0.0
+    
+    def slow_down(self, damping_factor=1):
+        current_time = time.time()
+        dt = current_time - self._last_time if self._last_time and (current_time - self._last_time) <= 0.5 else 0.0
+        self._last_time = current_time
+        self.linear_speed -= self.linear_speed * damping_factor * dt
+    
+    def spin_down(self, damping_factor=1):
+        current_time = time.time()
+        dt = current_time - self._last_time if self._last_time and (current_time - self._last_time) <= 0.5 else 0.0
+        self._last_time = current_time
+        self.angular_speed -= self.angular_speed * damping_factor * dt
+
 def orient_object(object_handle, alpha=None, beta=None, gamma=None):
     """Sets an object's orientation to specific angles (in radians)."""
     orientation = sim.getObjectOrientation(object_handle, -1)
@@ -42,3 +110,10 @@ def get_image(vision_sensor_handle):
     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     img = cv2.flip(img, 0)
     return img
+
+def screenshot_and_exit(cam_handle):
+    frame = get_image(cam_handle)
+    cv2.imshow('Vision Sensor Image', frame)
+    cv2.imwrite('last_frame.png', frame)
+    cv2.waitKey(1000)
+    raise SystemExit

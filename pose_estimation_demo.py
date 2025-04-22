@@ -1,3 +1,7 @@
+import sys, os
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 from pynput import keyboard
 from simple_pid import PID
@@ -21,24 +25,6 @@ camera_matrix = np.array([[focal_length,      0.0, x_res / 2],
                           [     0.0, focal_length, y_res / 2],
                           [     0.0,      0.0,      1.0]], dtype=np.float32)
 dist_coeffs = np.zeros((5, 1), dtype=np.float32)
-
-def screenshot_and_exit(cam_handle):
-    frame = get_image(cam_handle)
-    cv2.imshow('Vision Sensor Image', frame)
-    cv2.imwrite('last_frame.png', frame)
-    cv2.waitKey(1000)
-    raise SystemExit
-
-def unroll_offsets(offset_x, offset_y, roll_deg):
-    # Convert roll angle to radians.
-    roll_rad = math.radians(roll_deg)  # use positive roll
-    # Build the 2D rotation matrix for roll.
-    cos_r = math.cos(roll_rad)
-    sin_r = math.sin(roll_rad)
-    # Rotate the (offset_x, offset_y) vector.
-    x_unrolled = offset_x * cos_r - offset_y * sin_r
-    y_unrolled = offset_x * sin_r + offset_y * cos_r
-    return x_unrolled, y_unrolled
 
 # --- Main program ---
 ref_objs = [
@@ -79,7 +65,7 @@ try:
 
             # Estimate the camera pose based on the square
             print(f"SQUARE {sqr_idx}\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
-            cv2.polylines(frame, [quad], isClosed=True, color=(255, 255, 255), thickness=2)
+            cv2.polylines(frame, [quad], isClosed=True, color=(255, 255, 255), thickness=4)
             cam_pose = estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw)
             x_off, y_off = ref_objs[sqr_idx]['x'], ref_objs[sqr_idx]['y']
             cam_pose = list(cam_pose)  # Convert to list for modification
