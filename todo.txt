@@ -1,4 +1,6 @@
 + Test with octagon and square
++ Function to get camera matrix
 - Find out why panning the camera changes the circle's distance with both approaches, and the aruco's distance with the ref_size approach.
 - Determine whether an ellipse is actually an octagon
 - Move ordering of points to the find_quadrilateral function
+- Use arucos as well in pose_estimation_demo

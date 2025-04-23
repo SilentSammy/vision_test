@@ -7,30 +7,26 @@ import numpy as np
 import time
 import math
 import cv2
-from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose
+from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix
 from sim_tools import orient_object, move_object, sim, get_image
 
 # Connect and get simulator objects
-test_cam = sim.getObject('/VisionTest/visionSensor')
-cone = sim.getObject('/VisionTest[1]/Cone')
+test_cam1 = sim.getObject('/VisionTest[1]/visionSensor')
+test_cam2 = sim.getObject('/VisionTest[2]/visionSensor')
+test_cam = test_cam1
+cone = sim.getObject('/VisionTest[0]/Cone')
 
 # Compute the camera matrix and distortion coefficients
-x_res = 1024
-y_res = 1024
-fov_x_deg = 60
-focal_length = (x_res / 2) / math.tan(math.radians(fov_x_deg) / 2)
-camera_matrix = np.array([[focal_length,      0.0, x_res / 2],
-                          [     0.0, focal_length, y_res / 2],
-                          [     0.0,      0.0,      1.0]], dtype=np.float32)
+camera_matrix = get_camera_matrix(x_res=1024, y_res=1024, fov_x_deg=60)
 dist_coeffs = np.zeros((5, 1), dtype=np.float32)
 
 # --- Main program ---
 ref_objs = [
-    {'lh': (60, 200, 200), 'uh': (60, 255, 255), 'x': 0.0, 'y': 0.0},  # Pure green (lower tolerance)
+    {'lh': (60, 200, 200), 'uh': (60, 255, 255), 'x': 0.0, 'y': 0.0},  # Pure green
+    {'lh': (140, 100, 100), 'uh': (160, 255, 255), 'x': -0.8, 'y': 0.8},  # Magenta
     {'lh': (0, 150, 150), 'uh': (10, 255, 255), 'x': -0.8, 'y': -0.8},  # Pure red
     {'lh': (110, 150, 150), 'uh': (130, 255, 255), 'x': 0.8, 'y': -0.8},  # Pure blue
     {'lh': (15, 100, 100), 'uh': (25, 255, 255), 'x': 0.8, 'y': 0.8},  # Orange
-    {'lh': (140, 100, 100), 'uh': (160, 255, 255), 'x': -0.8, 'y': 0.8}  # Magenta
 ]
 
 try:
@@ -40,7 +36,8 @@ try:
 
         # Find ARUCO markers
         markers, aru_ids = find_arucos(frame)
-        # markers = zip(aru_ids, markers)
+        aru_ids = [] if aru_ids is None else [aru_id[0] for aru_id in aru_ids]
+        markers = zip(aru_ids, markers) if markers else []
 
         # Find squares
         squares = []
@@ -52,13 +49,22 @@ try:
         # Attempt to determine the camera pose based on the detected markers or squares (assuming the marker is at the origin, facing upward)
         cam_pose = None
         if markers:
-            yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = estimate_marker_pose(markers[0], frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.2)
-            print(f"ARUCO\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
+            # Choose the closest marker to the camera
+            marker_poses = [ (aru_id, marker, *estimate_marker_pose(marker, frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, marker_length=0.2)) for aru_id, marker in markers ]
+            marker_poses.sort(key=lambda x: x[5])  # Sort by cam_dist (5th element)
+            marker_id, marker, yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = marker_poses[0]
+
+            # Estimate the camera pose based on the marker
+            print(f"ARUCO {marker_id}\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
             cam_pose = estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw)
+            x_off, y_off = ref_objs[marker_id]['x'], ref_objs[marker_id]['y']
+            cam_pose = list(cam_pose)  # Convert to list for modification
+            cam_pose[0] += x_off
+            cam_pose[1] += y_off
         elif squares:
-            # Choose the closest square to the camera
+            # Choose the closest square to the camera, then the one with the least yaw + pitch
             square_poses = [ (sqr_id, quad, *estimate_square_pose(quad, frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, square_length=0.2)) for sqr_id, quad in squares ]
-            square_poses.sort(key=lambda x: x[5])  # Sort by cam_dist (5th element)
+            square_poses.sort(key=lambda x: (abs(x[3]) + abs(x[4]), x[5]))  # Sort by cam_dist (5th element), then by least yaw + pitch
             sqr_idx, quad, yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = square_poses[0]
 
             # Estimate the camera pose based on the square

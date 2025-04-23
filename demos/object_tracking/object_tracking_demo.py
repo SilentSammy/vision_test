@@ -1,22 +1,10 @@
 import sys, os
 sys.path[:0] = [os.path.abspath(os.path.join(os.path.dirname(__file__), p)) for p in ('..', '../..')]
-from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-from pynput import keyboard
-from simple_pid import PID
-import numpy as np
-import time
-import math
 import cv2
 from pose_estimation import find_ellipses, find_corresponding_point
 from sim_tools import sim, get_image
 
 demo_cam = sim.getObject('/Demo/visionSensor')
-
-# Camera parameters
-dist_coeffs = np.zeros((5, 1), dtype=np.float32)
-camera_matrix = np.array([[443.4, 0, 256],
-                          [0, 443.4, 256],
-                          [0, 0, 1]], dtype=np.float32)
 
 color = ((45, 100, 100), (75, 255, 255))
 next_id = 0

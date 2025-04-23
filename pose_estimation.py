@@ -550,3 +550,10 @@ def estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw):
     gamma = 0
 
     return x, y, z, alpha, beta, gamma
+
+def get_camera_matrix(x_res, y_res, fov_x_deg):
+    """Compute the camera matrix based on the resolution and field of view."""
+    focal_length = (x_res / 2) / math.tan(math.radians(fov_x_deg) / 2)
+    return np.array([[focal_length,      0.0, x_res / 2],
+                     [     0.0, focal_length, y_res / 2],
+                     [     0.0,      0.0,      1.0]], dtype=np.float32)
