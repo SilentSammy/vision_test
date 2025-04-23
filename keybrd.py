@@ -3,6 +3,8 @@ from pynput import keyboard
 # Monitor key presses
 pressed_keys = set()
 toggles = {}
+def is_pressed(key):
+    return key in pressed_keys
 def is_toggled(key):
     if key not in toggles:
         toggles[key] = False
