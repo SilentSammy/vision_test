@@ -7,13 +7,16 @@ import numpy as np
 import time
 import math
 import cv2
-from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix, draw_quad, order_points
+from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix, draw_quad
 from sim_tools import orient_object, move_object, sim, get_image
+from keybrd import rising_edge
 
 # Connect and get simulator objects
-test_cam1 = sim.getObject('/VisionTest[1]/visionSensor')
-test_cam2 = sim.getObject('/VisionTest[2]/visionSensor')
-test_cam = test_cam1
+cams = [
+    sim.getObject('/VisionTest[1]/visionSensor'),
+    sim.getObject('/VisionTest[2]/visionSensor')
+]
+test_cam = cams[0]
 cone = sim.getObject('/VisionTest[0]/Cone')
 
 # Compute the camera matrix and distortion coefficients
@@ -32,7 +35,16 @@ ref_objs = [
 try:
     sim.startSimulation()
     while sim.getSimulationState() != sim.simulation_stopped:
+        # Get image from the camera
+        if rising_edge('1'):
+            test_cam = cams[(cams.index(test_cam) + 1) % len(cams)]
+            print(f"Switched to camera {test_cam}")
         frame = get_image(test_cam)
+
+        # Optionally save the image
+        if rising_edge('2'):
+            cv2.imwrite('screenshot.png', frame)
+            print("Screenshot saved as screenshot.png")
 
         # Find ARUCO markers
         markers, aru_ids = find_arucos(frame)
@@ -62,7 +74,7 @@ try:
             cam_pose[0] += x_off
             cam_pose[1] += y_off
         elif squares:
-            # Choose the closest square to the camera, then the one with the least yaw + pitch
+            # Choose the square with the least yaw + pitch, then the closest to the camera
             square_poses = [ (sqr_id, quad, *estimate_square_pose(quad, frame, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, square_length=0.2)) for sqr_id, quad in squares ]
             square_poses.sort(key=lambda x: (abs(x[3]) + abs(x[4]), x[5]))  # Sort by cam_dist (5th element), then by least yaw + pitch
             sqr_idx, quad, yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw = square_poses[0]

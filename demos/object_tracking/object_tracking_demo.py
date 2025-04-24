@@ -37,12 +37,12 @@ try:
                 next_id += 1
                 objs.append(new_obj)
         # Optionally, remove objects that have left the field of view
-        objs = [o for o in objs if o['id'] in (o['id'] for o in new_objs)]
+        # objs = [o for o in objs if o['id'] in (o['id'] for o in new_objs)]
         
         # Draw the id on the objects
         for new_obj in objs:
             center = new_obj['shape'][0]
-            cv2.putText(frame, str(new_obj['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(frame, str(new_obj['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
 
         cv2.namedWindow("Vision Sensor", cv2.WINDOW_NORMAL)
         cv2.setWindowProperty("Vision Sensor", cv2.WND_PROP_TOPMOST, 1)

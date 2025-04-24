@@ -202,10 +202,10 @@ def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, squa
 def draw_quad(frame, quad):
     # Convert quad to the proper type.
     quad_int = quad.astype(np.int32)
-    cv2.polylines(frame, [quad_int], isClosed=True, color=(255, 255, 255), thickness=5)
+    cv2.polylines(frame, [quad_int], isClosed=True, color=(255, 255, 255), thickness=10)
     # draw red dot on the first point
     pt = tuple(quad_int[0][0])
-    cv2.circle(frame, pt, 5, (0, 0, 255), -1)
+    cv2.circle(frame, pt, 10, (0, 0, 255), -1)
 
 # CIRCLES
 def find_ellipses(frame, lower_hsv, upper_hsv):
