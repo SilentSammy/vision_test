@@ -2,23 +2,6 @@ import numpy as np
 import math
 import cv2
 
-def draw_ellipse(frame, ellipse):
-    cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
-    (center_x, center_y), (major, minor), angle = ellipse
-    center = (int(center_x), int(center_y))
-    theta = math.radians(angle)
-    major_dx = (major / 2) * math.cos(theta)
-    major_dy = (major / 2) * math.sin(theta)
-    pt1 = (int(center_x - major_dx), int(center_y - major_dy))
-    pt2 = (int(center_x + major_dx), int(center_y + major_dy))
-    cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
-    theta_minor = theta + math.pi/2  
-    minor_dx = (minor / 2) * math.cos(theta_minor)
-    minor_dy = (minor / 2) * math.sin(theta_minor)
-    pt3 = (int(center_x - minor_dx), int(center_y - minor_dy))
-    pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
-    cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
-
 def find_corresponding_point(new_point, old_points, threshold):
     """
     Returns the first old point that is within the absolute pixel distance 'threshold'
@@ -44,12 +27,6 @@ def find_corresponding_point(new_point, old_points, threshold):
             return pt
     return None
 
-def draw_quad(frame, quad):
-    cv2.polylines(frame, [quad], isClosed=True, color=(255, 255, 255), thickness=4)
-    # draw red dot on the first point
-    pt = tuple(quad[0][0])
-    cv2.circle(frame, pt, 5, (0, 0, 255), -1)
-
 # SQUARES
 def find_quadrilaterals(frame, lower_hsv, upper_hsv):
     """
@@ -63,6 +40,7 @@ def find_quadrilaterals(frame, lower_hsv, upper_hsv):
     Returns:
         A list of quadrilaterals, where each quadrilateral is represented as a list of 4 points.
     """
+
     # Convert the frame to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
@@ -80,9 +58,34 @@ def find_quadrilaterals(frame, lower_hsv, upper_hsv):
 
         # 3. Check if the polygon has 4 vertices and is convex
         if len(approx) == 4 and cv2.isContourConvex(approx):
+            approx = order_points(approx)
             quadrilaterals.append(approx)
 
     return quadrilaterals
+
+def order_points(pts):
+    """
+    Orders a set of 4 points in the following order:
+    top-left, top-right, bottom-right, bottom-left.
+
+    Parameters:
+      pts: A numpy array of shape (4,1,2) (or (4,2)) that you want to reorder.
+    
+    Returns:
+      A numpy array with the same shape as the input, with the points reordered.
+    """
+    # Flatten into (4,2) regardless of input shape.
+    pts = pts.reshape(4, 2)
+    ordered = np.empty_like(pts)
+    s = pts.sum(axis=1)
+    ordered[0] = pts[np.argmin(s)]
+    ordered[2] = pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    ordered[1] = pts[np.argmin(diff)]
+    ordered[3] = pts[np.argmax(diff)]
+    
+    # Reshape to match the input shape; if input was (4,1,2) return that.
+    return ordered.reshape(4, 1, 2)
 
 def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, square_length):
     """
@@ -97,32 +100,35 @@ def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, squa
 
     This version uses cv2.solvePnP and skips the custom (ref_size) approach.
     """
-    def order_points(pts):
+    
+    def order_points2(pts):
         """
         Orders a set of 4 points in the following order:
-        top-left, top-right, bottom-right, bottom-left
-
+        top-left, top-right, bottom-right, bottom-left.
+        
         Parameters:
-        pts: A numpy array of shape (4,2).
-
+        pts: A numpy array of shape (4,1,2) (as typically returned by cv2.findContours).
+        
         Returns:
-        A numpy array of shape (4,2) with the points ordered.
+        A numpy array of shape (4,1,2) with the points ordered.
         """
+        # Convert the shape from (4,1,2) to (4,2) for easier processing.
         pts = pts.reshape(4, 2)
-        ordered = np.zeros((4, 2), dtype=np.float32)
-        # the top-left point has the smallest sum,
-        # bottom-right has the largest sum.
+        ordered = np.zeros((4, 2), dtype=pts.dtype)
+        
+        # The top-left point has the smallest sum; bottom-right has the largest sum.
         s = pts.sum(axis=1)
         ordered[0] = pts[np.argmin(s)]
         ordered[2] = pts[np.argmax(s)]
-
-        # the top-right point has the smallest difference,
-        # bottom-left has the largest difference.
-        diff = np.diff(pts, axis=1)  # y - x
+        
+        # The top-right point has the smallest difference; bottom-left has the largest difference.
+        diff = np.diff(pts, axis=1)
         ordered[1] = pts[np.argmin(diff)]
         ordered[3] = pts[np.argmax(diff)]
-        return ordered
-    
+        
+        # Reshape back to (4,1,2) for consistency.
+        return ordered.reshape(4, 1, 2)
+
     def rotationMatrixToEulerAngles(R):
         """
         Converts a rotation matrix to Euler angles (roll, pitch, yaw) using the Tait–Bryan angles convention.
@@ -155,12 +161,9 @@ def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, squa
     ], dtype=np.float32)
 
     # Ensure points are in the correct format for solvePnP.
-    s = square_corners
-    s = s.astype(np.float32)
-    s = s.reshape(1, 4, 2)
-    s = s[:, :, ::-1]
-    img_points = s.reshape(4, 2)
-    img_points = order_points(square_corners.reshape(4, 2))
+    img_points = square_corners
+    # img_points = order_points(img_points)  # Ensure points are ordered correctly
+    img_points = img_points.reshape(4, 2).astype(np.float32)
 
     # Solve the PnP problem.
     retval, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
@@ -195,6 +198,14 @@ def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, squa
     cam_pitch = (offset_y / (h / 2)) * (fov_y / 2)
 
     return yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw
+
+def draw_quad(frame, quad):
+    # Convert quad to the proper type.
+    quad_int = quad.astype(np.int32)
+    cv2.polylines(frame, [quad_int], isClosed=True, color=(255, 255, 255), thickness=5)
+    # draw red dot on the first point
+    pt = tuple(quad_int[0][0])
+    cv2.circle(frame, pt, 5, (0, 0, 255), -1)
 
 # CIRCLES
 def find_ellipses(frame, lower_hsv, upper_hsv):
@@ -380,6 +391,23 @@ def find_corresponding_ellipse(new_ellipse, old_ellipses, threshold=2.5, relativ
         if dist < threshold * base_threshold:
             return old_ellipse
     return None
+
+def draw_ellipse(frame, ellipse):
+    cv2.ellipse(frame, ellipse, (0, 255, 0), 2)
+    (center_x, center_y), (major, minor), angle = ellipse
+    center = (int(center_x), int(center_y))
+    theta = math.radians(angle)
+    major_dx = (major / 2) * math.cos(theta)
+    major_dy = (major / 2) * math.sin(theta)
+    pt1 = (int(center_x - major_dx), int(center_y - major_dy))
+    pt2 = (int(center_x + major_dx), int(center_y + major_dy))
+    cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
+    theta_minor = theta + math.pi/2  
+    minor_dx = (minor / 2) * math.cos(theta_minor)
+    minor_dy = (minor / 2) * math.sin(theta_minor)
+    pt3 = (int(center_x - minor_dx), int(center_y - minor_dy))
+    pt4 = (int(center_x + minor_dx), int(center_y + minor_dy))
+    cv2.line(frame, pt3, pt4, (0, 0, 255), 2)
 
 # ARUCO MARKERS
 def find_arucos(frame):

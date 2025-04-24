@@ -2,6 +2,7 @@
 + Function to get camera matrix
 + Use arucos as well in pose_estimation_demo
 + smooth car control
++ allow detection of rising and falling edges in keybrd.py
++ Move ordering of points to the find_quadrilateral function
 - Find out why panning the camera changes the circle's distance with both approaches, and the aruco's distance with the ref_size approach
-- Move ordering of points to the find_quadrilateral function
-- keybrd.py allow detection of keyup and keydown events (but in loop fashion)
+

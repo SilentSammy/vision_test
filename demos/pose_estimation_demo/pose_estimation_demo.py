@@ -7,7 +7,7 @@ import numpy as np
 import time
 import math
 import cv2
-from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix
+from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix, draw_quad, order_points
 from sim_tools import orient_object, move_object, sim, get_image
 
 # Connect and get simulator objects
@@ -69,7 +69,7 @@ try:
 
             # Estimate the camera pose based on the square
             print(f"SQUARE {sqr_idx}\tZ:{yaw:6.2f}\tY:{pitch:6.2f}\tX:{roll:6.2f}\tD: {cam_dist:.2f}\tCp:{cam_pitch:6.2f}\tCy:{cam_yaw:6.2f}")
-            cv2.polylines(frame, [quad], isClosed=True, color=(255, 255, 255), thickness=4)
+            draw_quad(frame, quad)
             cam_pose = estimate_camera_pose(yaw, pitch, roll, cam_dist, cam_pitch, cam_yaw)
             x_off, y_off = ref_objs[sqr_idx]['x'], ref_objs[sqr_idx]['y']
             cam_pose = list(cam_pose)  # Convert to list for modification
