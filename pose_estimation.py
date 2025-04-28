@@ -2,6 +2,23 @@ import numpy as np
 import math
 import cv2
 
+def rotationMatrixToEulerAngles(R):
+    """
+    Converts a rotation matrix to Euler angles (roll, pitch, yaw) using the Tait–Bryan angles convention.
+    Returns a numpy array [roll, pitch, yaw] in radians.
+    """
+    sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
+    singular = sy < 1e-6
+    if not singular:
+        roll  = math.atan2(R[2, 1], R[2, 2])
+        pitch = math.atan2(-R[2, 0], sy)
+        yaw   = math.atan2(R[1, 0], R[0, 0])
+    else:
+        roll  = math.atan2(-R[1, 2], R[1, 1])
+        pitch = math.atan2(-R[2, 0], sy)
+        yaw   = 0
+    return np.array([roll, pitch, yaw])
+
 def find_corresponding_point(new_point, old_points, threshold):
     """
     Returns the first old point that is within the absolute pixel distance 'threshold'
@@ -58,8 +75,9 @@ def find_quadrilaterals(frame, lower_hsv, upper_hsv):
 
         # 3. Check if the polygon has 4 vertices and is convex
         if len(approx) == 4 and cv2.isContourConvex(approx):
-            approx = order_points(approx)
-            quadrilaterals.append(approx)
+            flattened = approx.reshape(4, 2)
+            ordered = order_points(flattened)
+            quadrilaterals.append(ordered)
 
     return quadrilaterals
 
@@ -74,6 +92,9 @@ def order_points(pts):
     Returns:
       A numpy array with the same shape as the input, with the points reordered.
     """
+    # Save the input shape
+    original_shape = pts.shape
+
     # Flatten into (4,2) regardless of input shape.
     pts = pts.reshape(4, 2)
     ordered = np.empty_like(pts)
@@ -84,8 +105,8 @@ def order_points(pts):
     ordered[1] = pts[np.argmin(diff)]
     ordered[3] = pts[np.argmax(diff)]
     
-    # Reshape to match the input shape; if input was (4,1,2) return that.
-    return ordered.reshape(4, 1, 2)
+    # Reshape to match the input shape
+    return ordered.reshape(original_shape)
 
 def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, square_length):
     """
@@ -100,70 +121,15 @@ def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, squa
 
     This version uses cv2.solvePnP and skips the custom (ref_size) approach.
     """
-    
-    def order_points2(pts):
-        """
-        Orders a set of 4 points in the following order:
-        top-left, top-right, bottom-right, bottom-left.
-        
-        Parameters:
-        pts: A numpy array of shape (4,1,2) (as typically returned by cv2.findContours).
-        
-        Returns:
-        A numpy array of shape (4,1,2) with the points ordered.
-        """
-        # Convert the shape from (4,1,2) to (4,2) for easier processing.
-        pts = pts.reshape(4, 2)
-        ordered = np.zeros((4, 2), dtype=pts.dtype)
-        
-        # The top-left point has the smallest sum; bottom-right has the largest sum.
-        s = pts.sum(axis=1)
-        ordered[0] = pts[np.argmin(s)]
-        ordered[2] = pts[np.argmax(s)]
-        
-        # The top-right point has the smallest difference; bottom-left has the largest difference.
-        diff = np.diff(pts, axis=1)
-        ordered[1] = pts[np.argmin(diff)]
-        ordered[3] = pts[np.argmax(diff)]
-        
-        # Reshape back to (4,1,2) for consistency.
-        return ordered.reshape(4, 1, 2)
-
-    def rotationMatrixToEulerAngles(R):
-        """
-        Converts a rotation matrix to Euler angles (roll, pitch, yaw) using the Tait–Bryan angles convention.
-        Returns a numpy array [roll, pitch, yaw] in radians.
-        """
-        sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
-        singular = sy < 1e-6
-        if not singular:
-            roll  = math.atan2(R[2, 1], R[2, 2])
-            pitch = math.atan2(-R[2, 0], sy)
-            yaw   = math.atan2(R[1, 0], R[0, 0])
-        else:
-            roll  = math.atan2(-R[1, 2], R[1, 1])
-            pitch = math.atan2(-R[2, 0], sy)
-            yaw   = 0
-        return np.array([roll, pitch, yaw])
 
     # Get image dimensions.
     h, w, _ = frame.shape
 
-    # Define 3D object points for the square.
-    # Here we assume the square lies in the z=0 plane and its corners are at:
-    # (0, 0, 0); (square_length, 0, 0); (square_length, square_length, 0); (0, square_length, 0)
-    # You may adjust this ordering based on your desired coordinate system.
-    obj_points = np.array([
-        [0, 0, 0],
-        [square_length, 0, 0],
-        [square_length, square_length, 0],
-        [0, square_length, 0]
-    ], dtype=np.float32)
+    # The original object shape in 3D. Since it's a square, all sides are equal, and we assume it's in the XY plane at Z=0, with its top-left corner at (0, 0, 0).
+    obj_points = np.array([ [0, 0, 0], [square_length, 0, 0], [square_length, square_length, 0], [0, square_length, 0] ], dtype=np.float32)
 
-    # Ensure points are in the correct format for solvePnP.
-    img_points = square_corners
-    # img_points = order_points(img_points)  # Ensure points are ordered correctly
-    img_points = img_points.reshape(4, 2).astype(np.float32)
+    # The corresponding image points are the detected corners of the square.
+    img_points = square_corners.reshape(4, 2).astype(np.float32)
 
     # Solve the PnP problem.
     retval, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
@@ -199,13 +165,33 @@ def estimate_square_pose(square_corners, frame, camera_matrix, dist_coeffs, squa
 
     return yaw, pitch, roll, estimated_distance, cam_pitch, cam_yaw
 
-def draw_quad(frame, quad):
+def draw_quad(frame, quad, drawOutline=True):
     # Convert quad to the proper type.
     quad_int = quad.astype(np.int32)
-    cv2.polylines(frame, [quad_int], isClosed=True, color=(255, 255, 255), thickness=10)
-    # draw red dot on the first point
-    pt = tuple(quad_int[0][0])
-    cv2.circle(frame, pt, 10, (0, 0, 255), -1)
+    if drawOutline:
+        cv2.polylines(frame, [quad_int], isClosed=True, color=(255, 255, 255), thickness=10)
+    
+    # Compute center of the quadrilateral.
+    corners = quad_int.reshape(4, 2)
+    center = np.mean(corners, axis=0).astype(np.int32)
+    center = np.array(center, dtype=np.float32)
+    
+    # get distance between first two corners
+    line_length = np.linalg.norm(corners[0] - corners[1]) * 0.25
+    
+    # For each corner, compute direction toward the center
+    # then draw a line from the corner toward the center with the computed length.
+    for idx, corner in enumerate(corners):
+        corner_f = np.array(corner, dtype=np.float32)
+        direction = center - corner_f
+        norm = np.linalg.norm(direction)
+        if norm != 0:
+            direction = direction / norm  # normalize
+        
+        endpoint = (corner_f + direction * line_length).astype(np.int32)
+        # The first corner's line will be red; others will be orange.
+        color = (0, 0, 255) if idx == 0 else (0, 165, 255)
+        cv2.line(frame, tuple(corner), tuple(endpoint), color, 5)
 
 # CIRCLES
 def find_ellipses(frame, lower_hsv, upper_hsv):
@@ -447,23 +433,6 @@ def estimate_marker_pose(marker_corners, frame, camera_matrix=None, dist_coeffs=
       
       Returns a tuple: (yaw, pitch, roll, distance, cam_pitch, cam_yaw)
     """
-
-    def rotationMatrixToEulerAngles(R):
-        """
-        Converts a rotation matrix to Euler angles (roll, pitch, yaw) using the 
-        Tait–Bryan angles convention. Returns a numpy array [roll, pitch, yaw] in radians.
-        """
-        sy = math.sqrt(R[0, 0]**2 + R[1, 0]**2)
-        singular = sy < 1e-6
-        if not singular:
-            roll = math.atan2(R[2, 1], R[2, 2])
-            pitch = math.atan2(-R[2, 0], sy)
-            yaw = math.atan2(R[1, 0], R[0, 0])
-        else:
-            roll = math.atan2(-R[1, 2], R[1, 1])
-            pitch = math.atan2(-R[2, 0], sy)
-            yaw = 0
-        return np.array([roll, pitch, yaw])
 
     h, w, _ = frame.shape
 
