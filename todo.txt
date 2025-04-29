@@ -7,9 +7,20 @@
 - Find out why panning the camera changes the circle's distance with both approaches, and the aruco's distance with the ref_size approach
 - Make everything in radians (ugh). Apparently fov for pose estimation is expected to be in radians? But only when using ref_size? Investigate.
 
-Pollitos
+Sim
 + Understand and standarize quad array format
 - Match nearby corners
-- Find 8 neighbors of a tile
-- id tile based on pattern
-- use id to determine camera pose
++ Find 8 neighbors of a tile
++ id tile based on pattern
++ use id to determine camera pose
++ find some more patterns
+- find yellow points on the image
+- project them in 3D
+
+
+Video
+- Find corners
+- Extrapolate corners, fill in gaps
+- Match nearby corners
+- Get quads from corners
+- Get colors

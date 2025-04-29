@@ -40,11 +40,11 @@ def main():
     # Hardcoded or command-line parameters
     parser = argparse.ArgumentParser(
         description='Draw n-1 evenly spaced grid lines on an existing image.')
-    parser.add_argument('--n', type=int, default=11,
+    parser.add_argument('--n', type=int, default=15,
                         help='Total squares per axis (draws n-1 grid lines).')
     parser.add_argument('--output', type=str, default='grid_output.png',
                         help='Output image filename.')
-    parser.add_argument('--thickness', type=int, default=2,
+    parser.add_argument('--thickness', type=int, default=1,
                         help='Grid line thickness.')
     args = parser.parse_args()
     
