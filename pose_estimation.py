@@ -193,6 +193,48 @@ def draw_quad(frame, quad, drawOutline=True):
         color = (0, 0, 255) if idx == 0 else (0, 165, 255)
         cv2.line(frame, tuple(corner), tuple(endpoint), color, 5)
 
+def project_point_to_plane(quad, point, square_length):
+    """
+    Projects a 2D point (in image coordinates) to the coordinate system
+    defined by a square in the image given by its 4 corners.
+    
+    Parameters:
+      quad: A numpy array of shape (4,2) representing the corners of the square
+            in image coordinates ordered as:
+               0: top-left, 1: top-right, 2: bottom-right, 3: bottom-left.
+      point: A tuple (or list/array) of (x, y) in image coordinates.
+      square_length: The real-world length of the square's side (e.g., in meters).
+      
+    Returns:
+      A tuple (X, Y) representing the coordinates of the given point in the square's plane coordinate system.
+      Here, the top-left of the square is at (0, 0) and the bottom-right is at (square_length, square_length).
+    """
+    
+    # Define the object-space corners for the square.
+    # We're mapping the quad such that its top-left becomes (0,0)
+    # and bottom-right becomes (square_length, square_length).
+    obj_pts = np.array([
+        [0, 0],
+        [square_length, 0],
+        [square_length, square_length],
+        [0, square_length]
+    ], dtype=np.float32)
+    
+    # Ensure quad is a numpy array of type float32.
+    quad = np.asarray(quad, dtype=np.float32)
+    
+    # Compute the perspective transform (homography) from image to object space.
+    H = cv2.getPerspectiveTransform(quad, obj_pts)
+    
+    # Prepare the point as homogeneous coordinates for cv2.perspectiveTransform.
+    pts = np.array([[[point[0], point[1]]]], dtype=np.float32)
+    
+    # Apply the perspective transform.
+    projected = cv2.perspectiveTransform(pts, H)
+    
+    # Return the resulting 2D coordinates.
+    return tuple(projected[0][0])
+
 # CIRCLES
 def find_ellipses(frame, lower_hsv, upper_hsv):
     # Find contours that match the specified color
@@ -554,3 +596,22 @@ def get_camera_matrix(x_res, y_res, fov_x_deg):
     return np.array([[focal_length,      0.0, x_res / 2],
                      [     0.0, focal_length, y_res / 2],
                      [     0.0,      0.0,      1.0]], dtype=np.float32)
+
+if __name__ == "__main__":
+    # Suppose quad holds detected corners of a square in the image:
+    quad = np.array([
+        [424, 424],
+        [599, 424],
+        [599, 599],
+        [424, 599]
+    ], dtype=np.float32)
+
+    # And the square's real-life side length is 0.3 (meters).
+    square_length = 0.3
+
+    # A point in the image, assumed to lie on the same plane:
+    image_point = (500, 500)
+
+    # Compute its coordinates on the square's plane.
+    plane_coords = project_point_to_plane(quad, image_point, square_length)
+    print("Projected plane coordinates:", plane_coords)

@@ -7,7 +7,7 @@ import numpy as np
 import time
 import math
 import cv2
-from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix, draw_quad
+from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix, draw_quad, find_ellipses, project_point_to_plane
 from sim_tools import orient_object, move_object, sim, get_image
 from keybrd import rising_edge
 
@@ -18,6 +18,8 @@ cams = [
 ]
 test_cam = cams[0]
 cone = sim.getObject('/VisionTest[0]/Cone')
+duck = sim.getObject('/VisionTest[0]/Sphere')
+
 
 # Compute the camera matrix and distortion coefficients
 camera_matrix = get_camera_matrix(x_res=1024, y_res=1024, fov_x_deg=60)
@@ -57,6 +59,10 @@ try:
             sqrs = find_quadrilaterals(frame, lower_hsv=ref_obj['lh'], upper_hsv=ref_obj['uh'])
             if sqrs:
                 squares.append((idx, sqrs[0]))
+        
+        # Find yellow contours
+        ellipses = find_ellipses(frame, lower_hsv=(20, 100, 100), upper_hsv=(30, 255, 255))
+        points = [e[0] for e in ellipses if e[0] is not None]
 
         # Attempt to determine the camera pose based on the detected markers or squares (assuming the marker is at the origin, facing upward)
         cam_pose = None
@@ -88,6 +94,17 @@ try:
             cam_pose[0] += x_off
             cam_pose[1] += y_off
 
+            if points:
+                pt = points[0]
+                print(pt)
+                # project the point in the plane of the square
+                point_pos = project_point_to_plane(quad, pt, 0.2)
+
+                move_object(duck, y=-float(point_pos[0]) + 0.1, x=-float(point_pos[1]) + 0.1)
+
+
+
+        
         # Visualize the estimated camera pose in the simulation
         if cam_pose:
             x, y, z, alpha, beta, gamma = cam_pose

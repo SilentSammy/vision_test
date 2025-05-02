@@ -13,8 +13,9 @@ Sim
 + Find 8 neighbors of a tile
 + id tile based on pattern
 + use id to determine camera pose
-+ find some more patterns
-- find yellow points on the image
++ find some more patterns with offsets
+- figure out why it doesn't work when pitched too far
++ find yellow points on the image
 - project them in 3D
 
 
