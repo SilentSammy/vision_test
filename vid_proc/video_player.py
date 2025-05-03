@@ -6,12 +6,13 @@ import time
 import math
 import cv2
 import keybrd
-import filterPoints
 
 # Helper functions
 def draw_quad(frame, quad, drawOutline=True):
-    # Convert quad to the proper type.
-    quad_int = quad.astype(np.int32)
+    # Ensure quad is a numpy array.
+    quad_arr = np.array(quad) if not isinstance(quad, np.ndarray) else quad
+    # Convert quad_arr to the proper type.
+    quad_int = quad_arr.astype(np.int32)
     if drawOutline:
         cv2.polylines(frame, [quad_int], isClosed=True, color=(255, 255, 255), thickness=2)
     
@@ -106,7 +107,6 @@ def get_file_data(file_path):
             'data': data,
         }
     
-    print(f"{file_path}", end=' ')
     return files[file_path]['data']
 
 def get_frame_data(file, fr_idx=None):
@@ -121,28 +121,32 @@ def get_frame_data(file, fr_idx=None):
     return data[frame_key]
 
 # Drawing functions
-def draw_corners():
-    frame_data = get_frame_data('corners.json')
-    if frame_data is None:
-        return
-    for corner in frame_data:
-        x, y = corner[0], corner[1]
-        cv2.circle(frame, (int(x), int(y)), 5, (0, 255, 0), -1)
-
 def draw_quads():
-    quads = detect_quads(frame)
+    quads = get_frame_data('quads.json')
+    if quads is None:
+        return
     for quad in quads:
         draw_quad(frame, quad, drawOutline=True)
         
-def draw_points():
-    frame_data = get_frame_data('ducks.json')
-    if frame_data is None:
+def draw_ducks():
+    ducks = get_frame_data('ducks.json')
+    if ducks is None:
         return
-    for point_id, position in frame_data.items():
+    for point_id, position in ducks.items():
         x, y = position[0], position[1]
         cv2.putText(frame, str(point_id), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-# Setup variables
+def draw_tiles():
+    tiles = get_frame_data('tiles.json')
+    if tiles is None:
+        return
+    for tile in tiles:
+        q = tile['shape']
+        center = np.mean(q, axis=0).astype(np.int32)
+        cv2.putText(frame, str(tile['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+# Setup
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 re = keybrd.rising_edge # Function to check if a key is pressed once
 pr = keybrd.is_pressed # Function to check if a key is pressed
 frame_count = 1  # This will be overwritten in setup_video_source
@@ -150,7 +154,7 @@ frame_idx = 0.0 # Don't ask why it's a float, it just is
 fps = 30  # Default FPS
 files = {}  # Dictionary to store file data
 frame = None  # Placeholder for the current frame
-get_frame = setup_video_source(r"vid_proc/input.mp4")
+get_frame = setup_video_source(r"input.mp4")
 
 last_time = time.time()
 while True:
@@ -171,19 +175,15 @@ while True:
         
         # Layers
         if keybrd.is_toggled('1'):
-            draw_corners()
+            draw_ducks()
         if keybrd.is_toggled('2'):
             draw_quads()
         if keybrd.is_toggled('3'):
-            draw_points()
-        if keybrd.is_toggled('4'):
-            quads = filterPoints.detect_quads(frame)
-            for quad in quads:
-                draw_quad(frame, quad, drawOutline=True)
+            draw_tiles()
         cv2.imshow("Video", frame)
         print()
     
-    if re('s'):
+    if re('p'):
         # Save the current frame as an image.
         output_file = f"frame_{int(frame_idx)}.png"
         cv2.imwrite(output_file, frame)

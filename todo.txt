@@ -19,5 +19,6 @@ Sim
 + project them in 3D
 
 Video
-- Get quads
++- Get quads
++ Assign ids
 - Anchor to just one at a time
