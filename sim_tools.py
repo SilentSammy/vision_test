@@ -99,6 +99,89 @@ class DifferentialCar:
         # Update the speed.
         self.linear_speed += (1 if diff > 0 else -1) * dv
 
+class MechanumCar:
+    def __init__(self, front_left=None, front_right=None, rear_left=None, rear_right=None):
+        # Get wheel handles from the global sim object
+        self.front_left = front_left or sim.getObject('/youBot/rollingJoint_fl')
+        self.front_right = front_right or sim.getObject('/youBot/rollingJoint_fr')
+        self.rear_left = rear_left or sim.getObject('/youBot/rollingJoint_rl')
+        self.rear_right = rear_right or sim.getObject('/youBot/rollingJoint_rr')
+
+        # Mecanum car constants:
+        self.nominalLinearVelocity = 0.3  # nominal linear speed (m/s)
+        self.wheelRadius = 0.027          # wheel radius (m)
+        self.interWheelDistance = 0.119   # distance between left/right wheels (m)
+        self.interAxleDistance = 0.15      # distance between front/rear axles (m) - example value
+
+        # Internal speeds:
+        self._v_x = 0.0            # Forward/backward speed (m/s)
+        self._v_y = 0.0            # Lateral (side-to-side) speed (m/s)
+        self._angular_speed = 0.0  # Rotational speed (rad/s)
+
+        # Internal time tracking if you later want to add acceleration support
+        self._last_time = None
+
+        self._update_wheel_velocities()
+
+    def _update_wheel_velocities(self):
+        # Mecanum wheel kinematics:
+        # For a standard mecanum configuration, use:
+        #   Front Left Wheel:  (v_x - v_y - (a + b) * ω)
+        #   Front Right Wheel: (v_x + v_y + (a + b) * ω)
+        #   Rear Left Wheel:   (v_x + v_y - (a + b) * ω)
+        #   Rear Right Wheel:  (v_x - v_y + (a + b) * ω)
+        # where a = half of the inter-axle distance and
+        #       b = half of the inter-wheel distance.
+        
+        a = self.interAxleDistance / 2.0
+        b = self.interWheelDistance / 2.0
+
+        fl_speed = (1 / self.wheelRadius) * (self._v_x - self._v_y - (a + b) * self._angular_speed)
+        fr_speed = (1 / self.wheelRadius) * (self._v_x + self._v_y + (a + b) * self._angular_speed)
+        rl_speed = (1 / self.wheelRadius) * (self._v_x + self._v_y - (a + b) * self._angular_speed)
+        rr_speed = (1 / self.wheelRadius) * (self._v_x - self._v_y + (a + b) * self._angular_speed)
+
+        # Batch update wheel speeds using stepping
+        client.setStepping(True)
+        sim.setJointTargetVelocity(self.front_left, float(fl_speed))
+        sim.setJointTargetVelocity(self.front_right, float(fr_speed))
+        sim.setJointTargetVelocity(self.rear_left,  float(rl_speed))
+        sim.setJointTargetVelocity(self.rear_right, float(rr_speed))
+        client.setStepping(False)
+
+    # Properties to update velocities on change:
+    @property
+    def v_x(self):
+        return self._v_x
+
+    @v_x.setter
+    def v_x(self, value):
+        self._v_x = value
+        self._update_wheel_velocities()
+
+    @property
+    def v_y(self):
+        return self._v_y
+
+    @v_y.setter
+    def v_y(self, value):
+        self._v_y = value
+        self._update_wheel_velocities()
+
+    @property
+    def angular_speed(self):
+        return self._angular_speed
+
+    @angular_speed.setter
+    def angular_speed(self, value):
+        self._angular_speed = value
+        self._update_wheel_velocities()
+
+    def stop(self):
+        self.v_x = 0.0
+        self.v_y = 0.0
+        self.angular_speed = 0.0
+
 def orient_object(object_handle, alpha=None, beta=None, gamma=None):
     """Sets an object's orientation to specific angles (in radians)."""
     orientation = sim.getObjectOrientation(object_handle, -1)

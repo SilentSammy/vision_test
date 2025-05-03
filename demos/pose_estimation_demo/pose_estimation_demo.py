@@ -99,11 +99,8 @@ try:
                 print(pt)
                 # project the point in the plane of the square
                 point_pos = project_point_to_plane(quad, pt, 0.2)
-
-                move_object(duck, y=-float(point_pos[0]) + 0.1, x=-float(point_pos[1]) + 0.1)
-
-
-
+                point_pos = (-float(point_pos[0])+y_off, -float(point_pos[1])+x_off)
+                move_object(duck, y=point_pos[0], x=point_pos[1])
         
         # Visualize the estimated camera pose in the simulation
         if cam_pose:

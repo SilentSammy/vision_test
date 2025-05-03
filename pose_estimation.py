@@ -233,7 +233,9 @@ def project_point_to_plane(quad, point, square_length):
     projected = cv2.perspectiveTransform(pts, H)
     
     # Return the resulting 2D coordinates.
-    return tuple(projected[0][0])
+    projected = tuple(projected[0][0])
+    projected = (float(projected[0]) - square_length*0.5, float(projected[1]) - square_length*0.5)
+    return projected
 
 # CIRCLES
 def find_ellipses(frame, lower_hsv, upper_hsv):

@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import json
 from sklearn.cluster import KMeans, DBSCAN
+import math
 
 VIDEO_PATH    = './input.mp4'
 START_FRAME   = 0
@@ -32,6 +33,153 @@ def detect_segments(frame):
                            maxLineGap=MAX_LINE_GAP)
     return [] if segs is None else [tuple(s) for s in segs[:,0]]
 
+def segment_angle(seg):
+    """Return the angle (radians) of the segment (between −π and π)."""
+    x1, y1, x2, y2 = seg
+    return math.atan2(y2 - y1, x2 - x1)
+
+def point_line_distance(pt, seg):
+    """
+    Compute the perpendicular distance from a point pt to the infinite line
+    defined by segment seg.
+    """
+    x1, y1, x2, y2 = seg
+    x0, y0 = pt
+    den = math.hypot(x2 - x1, y2 - y1)
+    if den < 1e-6:
+        return float('inf')
+    num = abs((y2 - y1)*x0 - (x2 - x1)*y0 + x2*y1 - y2*x1)
+    return num / den
+
+def merge_two_segments(seg1, seg2):
+    """
+    Merge two segments by projecting all endpoints onto the line of seg1
+    (assuming segments are collinear enough) and taking the min/max projections.
+    Returns a new segment defined by these two extreme points.
+    """
+    x1, y1, x2, y2 = seg1
+    dx, dy = x2 - x1, y2 - y1
+    norm = math.hypot(dx, dy)
+    if norm < 1e-6:
+        return seg1
+    # Use seg1's first endpoint as reference.
+    ux, uy = dx / norm, dy / norm
+    ref = (x1, y1)
+    
+    def proj(pt):
+        return (pt[0] - ref[0]) * ux + (pt[1] - ref[1]) * uy
+
+    pts = [(seg1[0], seg1[1]), (seg1[2], seg1[3]),
+           (seg2[0], seg2[1]), (seg2[2], seg2[3])]
+    projections = [proj(pt) for pt in pts]
+    min_proj = min(projections)
+    max_proj = max(projections)
+    new_pt1 = (ref[0] + min_proj * ux, ref[1] + min_proj * uy)
+    new_pt2 = (ref[0] + max_proj * ux, ref[1] + max_proj * uy)
+    return (new_pt1[0], new_pt1[1], new_pt2[0], new_pt2[1])
+
+def merge_segments(segs):
+    """
+    Merge segments that are nearly parallel and nearly collinear.
+    
+    Two segments are merged if:
+     - Their angles differ by less than ANGLE_THRESH (in radians), and
+     - At least one endpoint of one segment is within DIST_THRESH pixels 
+       of the infinite line defined by the other.
+       
+    Returns a list of merged segments.
+    """
+    ANGLE_THRESH = math.radians(5)  # 5 degrees threshold
+    DIST_THRESH = 10  # pixel distance threshold
+    merged = []
+    
+    for seg in segs:
+        merged_flag = False
+        for i in range(len(merged)):
+            m = merged[i]
+            # Check angle difference.
+            angle_diff = abs(segment_angle(seg) - segment_angle(m))
+            if angle_diff > ANGLE_THRESH:
+                continue
+            # Check if at least one endpoint of seg is close to m's line.
+            if (point_line_distance((seg[0], seg[1]), m) < DIST_THRESH or 
+                point_line_distance((seg[2], seg[3]), m) < DIST_THRESH):
+                # Merge the two segments.
+                new_seg = merge_two_segments(m, seg)
+                merged[i] = new_seg
+                merged_flag = True
+                break
+        if not merged_flag:
+            merged.append(seg)
+    return merged
+
+def extend_segments(segs, frame_shape, thres=0.5):
+    """
+    Given a list of segments (each a tuple (x1, y1, x2, y2)) and the frame shape,
+    extend each segment (if its original length is at least 0.5 * min(frame_width, frame_height))
+    so that it reaches the borders of the frame. Segments shorter than this threshold are removed.
+
+    Parameters:
+      segs: list of tuples (x1, y1, x2, y2)
+      frame_shape: tuple (height, width, channels)
+
+    Returns:
+      A list of extended segments (each a tuple (x1, y1, x2, y2)).
+    """
+    height, width = frame_shape[:2]
+    threshold = thres * min(width, height)
+    extended = []
+    
+    for seg in segs:
+        x1, y1, x2, y2 = seg
+        dx = x2 - x1
+        dy = y2 - y1
+        length = math.hypot(dx, dy)
+        if length < threshold:
+            # Skip segments that are too short.
+            continue
+        
+        # Parameterize line: P(t) = (x1, y1) + t*(dx, dy)
+        intersections = []
+        
+        # Left border: x = 0
+        if dx != 0:
+            t = (0 - x1) / dx
+            y_int = y1 + t * dy
+            if 0 <= y_int <= height:
+                intersections.append((0, y_int, t))
+        # Right border: x = width
+        if dx != 0:
+            t = (width - x1) / dx
+            y_int = y1 + t * dy
+            if 0 <= y_int <= height:
+                intersections.append((width, y_int, t))
+        # Top border: y = 0
+        if dy != 0:
+            t = (0 - y1) / dy
+            x_int = x1 + t * dx
+            if 0 <= x_int <= width:
+                intersections.append((x_int, 0, t))
+        # Bottom border: y = height
+        if dy != 0:
+            t = (height - y1) / dy
+            x_int = x1 + t * dx
+            if 0 <= x_int <= width:
+                intersections.append((x_int, height, t))
+        
+        if len(intersections) < 2:
+            # cannot extend if fewer than two valid intersections
+            continue
+        
+        # Choose the two extreme intersection points based on t values.
+        intersections.sort(key=lambda x: x[2])
+        pt_start = intersections[0][:2]
+        pt_end = intersections[-1][:2]
+        
+        extended.append((pt_start[0], pt_start[1], pt_end[0], pt_end[1]))
+    
+    return extended
+
 def cluster_lines_hv(segs):
     dirs, lines = [], []
     for x1,y1,x2,y2 in segs:
@@ -45,6 +193,34 @@ def cluster_lines_hv(segs):
     hl = int(np.argmax(avg_dx))
     horiz = [lines[i] for i in range(len(lines)) if labels[i]==hl]
     vert  = [lines[i] for i in range(len(lines)) if labels[i]!=hl]
+
+    # Compute mean directions for each cluster.
+    mean_h = np.mean([dirs[i] for i in range(len(dirs)) if labels[i]==hl], axis=0)
+    mean_v = np.mean([dirs[i] for i in range(len(dirs)) if labels[i]!=hl], axis=0)
+
+    # Set an angle threshold (10 degrees)
+    angle_thresh = math.radians(20)
+
+    # Build dictionaries mapping original indices to the angle difference from the mean.
+    angles_h_dict = {}
+    angles_v_dict = {}
+    for i, d in enumerate(dirs):
+        if labels[i] == hl:
+            diff = math.atan2(d[1], d[0]) - math.atan2(mean_h[1], mean_h[0])
+            # Normalize to [-pi,pi]
+            diff = (diff + math.pi) % (2*math.pi) - math.pi
+            angles_h_dict[i] = diff
+        else:
+            diff = math.atan2(d[1], d[0]) - math.atan2(mean_v[1], mean_v[0])
+            diff = (diff + math.pi) % (2*math.pi) - math.pi
+            angles_v_dict[i] = diff
+
+    # Now filter out segments whose angle difference exceeds the threshold.
+    horiz = [lines[i] for i in range(len(lines)) 
+            if labels[i]==hl and abs(angles_h_dict[i]) < angle_thresh]
+    vert  = [lines[i] for i in range(len(lines)) 
+            if labels[i]!=hl and abs(angles_v_dict[i]) < angle_thresh]
+
     return horiz, vert
 
 def filter_points(pts):
@@ -63,17 +239,79 @@ def filter_points(pts):
     return out
 
 # --- Full detection for one frame ---
-def detect_corners(frame):
+def detect_quads(frame):
+    frame = frame.copy()
     segs = detect_segments(frame)
+    segs = merge_segments(segs)
+    segs = extend_segments(segs, frame.shape, 0.25)
+    segs = [(int(x1), int(y1), int(x2), int(y2)) for x1, y1, x2, y2 in segs]
+
+    # Cluster lines into horizontal and vertical groups
     horiz, vert = cluster_lines_hv(segs)
+    horiz = sorted(horiz, key=lambda s: (s[1], s[0]))   # Sort horiz from top to bottom
+    vert = sorted(vert, key=lambda s: (s[0], s[1]))     # Sort vert from left to right
+
+    for seg in horiz:
+        cv2.line(frame, (seg[0], seg[1]), (seg[2], seg[3]), (0, 255, 0), 2)
+    for seg in vert:
+        cv2.line(frame, (seg[0], seg[1]), (seg[2], seg[3]), (0, 0, 255), 2)
+
+    # Get intersections of horizontal and vertical lines
     h,w = frame.shape[:2]
     pts=[]
+    intersections = []
     for hl in horiz:
         for vl in vert:
             p = intersect(hl,vl)
             if p and 0<=p[0]<w and 0<=p[1]<h:
+                cv2.circle(frame, (int(p[0]), int(p[1])), 5, (0, 255, 0), -1)
                 pts.append(p)
-    return filter_points(pts)
+                intersections.append((hl,vl))
+    
+    quads = []
+    for i in range(len(pts)):
+        # Get the first point, and its corresponding segments
+        top_left = pts[i]
+        hor = intersections[i][0]
+        ver = intersections[i][1]
+
+        # Get all points along hor
+        hor_pts_idx = [i for i in range(len(pts)) if intersections[i][0] == hor]
+        hor_pts = [pts[i] for i in hor_pts_idx]
+        # Only keep the points that are to the right of top_left
+        hor_pts_idx = [i for i in hor_pts_idx if pts[i][0] > top_left[0]]
+        hor_pts = [pts[i] for i in hor_pts_idx]
+        # Choose the closest point to top_left
+        if not hor_pts:
+            continue
+        top_right_idx = hor_pts_idx[0]
+        top_right = pts[top_right_idx]
+
+        # Get all points along ver
+        ver_pts_idx = [i for i in range(len(pts)) if intersections[i][1] == ver]
+        ver_pts = [pts[i] for i in ver_pts_idx]
+        # Only keep the points that are below top_left
+        ver_pts_idx = [i for i in ver_pts_idx if pts[i][1] > top_left[1]]
+        ver_pts = [pts[i] for i in ver_pts_idx]
+        # Choose the closest point to top_left
+        if not ver_pts:
+            continue
+        bottom_left_idx = ver_pts_idx[0]
+        bottom_left = pts[bottom_left_idx]
+
+        # Get the vertical segment of top_right
+        bottom_right_vert = intersections[top_right_idx][1]
+        # Get the horizontal segment of bottom_left
+        bottom_right_hor = intersections[bottom_left_idx][0]
+        # Get the point of intersection of bottom_right_vert and bottom_right_hor
+        bottom_right = intersect(bottom_right_vert, bottom_right_hor)
+        if not bottom_right:
+            continue
+        quad = np.array([top_left, top_right, bottom_right, bottom_left], dtype=int)
+        quads.append(quad)
+
+    cv2.imshow('Tile detection', frame)
+    return quads
 
 # ————————————————————————————————
 # helper: convert a segment (x1,y1,x2,y2) to (rho,theta)
@@ -121,43 +359,6 @@ def intersect_lines(l1, l2):
     b = np.array([rho1, rho2])
     return np.linalg.solve(A, b)
 
-# ————————————————————————————————
-def detect_quads(frame,
-                 canny1=50, canny2=150,
-                 hough_thresh=80,
-                 min_line_len=30, max_line_gap=5,
-                 dbscan_dist=30):
-    # 1) find segments & split into horiz/vert
-    segs = detect_segments(frame)
-    horiz_segs, vert_segs = cluster_lines_hv(segs)
-
-    # 2) convert to infinite lines
-    lines_h = [segment_to_rho_theta(s) for s in horiz_segs]
-    lines_v = [segment_to_rho_theta(s) for s in vert_segs]
-    lines_h = [l for l in lines_h if l is not None]
-    lines_v = [l for l in lines_v if l is not None]
-
-    # 3) cluster by rho
-    lines_h = cluster_lines_by_rho(lines_h, eps=dbscan_dist)
-    lines_v = cluster_lines_by_rho(lines_v, eps=dbscan_dist)
-
-    # 4) sort: horizontals by y = rho·sinθ, verticals by x = rho·cosθ
-    lines_h.sort(key=lambda lt: lt[0]*np.sin(lt[1]))
-    lines_v.sort(key=lambda lt: lt[0]*np.cos(lt[1]))
-
-    # 5) intersect adjacent pairs → quads
-    quads = []
-    for i in range(len(lines_h)-1):
-        for j in range(len(lines_v)-1):
-            p1 = intersect_lines(lines_h[i],   lines_v[j])
-            p2 = intersect_lines(lines_h[i],   lines_v[j+1])
-            p3 = intersect_lines(lines_h[i+1], lines_v[j+1])
-            p4 = intersect_lines(lines_h[i+1], lines_v[j])
-            quad = np.vstack([p1,p2,p3,p4])
-            quads.append(quad)
-
-    return quads
-
 def main():
     cap = cv2.VideoCapture(VIDEO_PATH)
     frame_idx = START_FRAME
@@ -166,7 +367,7 @@ def main():
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret: break
-        pts = detect_corners(frame)
+        pts = detect_quads(frame)
         coords[frame_idx] = [(float(x), float(y)) for x,y in pts]
         # display
         disp = frame.copy()

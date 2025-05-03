@@ -14,14 +14,10 @@ Sim
 + id tile based on pattern
 + use id to determine camera pose
 + find some more patterns with offsets
-- figure out why it doesn't work when pitched too far
+    - figure out why it doesn't work when pitched too far
 + find yellow points on the image
-- project them in 3D
-
++ project them in 3D
 
 Video
-- Find corners
-- Extrapolate corners, fill in gaps
-- Match nearby corners
-- Get quads from corners
-- Get colors
+- Get quads
+- Anchor to just one at a time

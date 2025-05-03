@@ -6,7 +6,7 @@ import time
 import math
 import cv2
 import keybrd
-from filterPoints import detect_quads
+import filterPoints
 
 # Helper functions
 def draw_quad(frame, quad, drawOutline=True):
@@ -150,7 +150,7 @@ frame_idx = 0.0 # Don't ask why it's a float, it just is
 fps = 30  # Default FPS
 files = {}  # Dictionary to store file data
 frame = None  # Placeholder for the current frame
-get_frame = setup_video_source(r"input.mp4")
+get_frame = setup_video_source(r"vid_proc/input.mp4")
 
 last_time = time.time()
 while True:
@@ -159,9 +159,9 @@ while True:
     last_time = time.time()
 
     # Update frame index based on keyboard input.
-    frame_idx += dt * fps if pr('d') else -dt * fps if pr('a') else 0       # Move forward/backward
-    frame_idx += (dt * fps if pr('e') else -dt * fps if pr('q') else 0) * 10 # Fast forward/backward
-    frame_idx += 1 if re('w') else -1 if re('s') else 0                     # Step forward/backward
+    frame_idx += dt * fps if pr('d') else -dt * fps if pr('a') else 0           # Move forward/backward
+    frame_idx += (dt * fps if pr('e') else -dt * fps if pr('q') else 0) * 10    # Fast forward/backward
+    frame_idx += 1 if re('w') else -1 if re('s') else 0                         # Step forward/backward
     frame_idx = frame_idx % frame_count
 
     # Get the current frame by converting frame_idx to an int.
@@ -176,9 +176,19 @@ while True:
             draw_quads()
         if keybrd.is_toggled('3'):
             draw_points()
+        if keybrd.is_toggled('4'):
+            quads = filterPoints.detect_quads(frame)
+            for quad in quads:
+                draw_quad(frame, quad, drawOutline=True)
         cv2.imshow("Video", frame)
         print()
     
+    if re('s'):
+        # Save the current frame as an image.
+        output_file = f"frame_{int(frame_idx)}.png"
+        cv2.imwrite(output_file, frame)
+        print(f"Saved frame {int(frame_idx)} as {output_file}")
+
     # Press 'Escape' to exit.
     if cv2.waitKey(1) & 0xFF == 27:
         break
