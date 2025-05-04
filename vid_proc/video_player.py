@@ -241,6 +241,7 @@ def sync_sim():
     if anchor is None:
         return
     video_replicator.update_anchor_position(anchor['id'])
+    video_replicator.update_cone_position(anchor['id'], anchor['shape'], frame)
     print("sim_sync", end=',')
 
 # Setup
@@ -248,11 +249,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 re = keybrd.rising_edge # Function to check if a key is pressed once
 pr = keybrd.is_pressed # Function to check if a key is pressed
 files = {}  # Dictionary to store file data
-# frame_count = 1  # This will be overwritten in setup_video_source
-# frame_idx = 0.0 # Don't ask why it's a float, it just is
-# fps = 30  # Default FPS
-# frame = None  # Placeholder for the current frame
-# get_frame = setup_video_source(r"input.mp4")
+frame = None  # Placeholder for the current frame
 
 # Initialize the video player
 vp = VideoPlayer(r"input.mp4")
