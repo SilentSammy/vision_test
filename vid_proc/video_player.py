@@ -227,21 +227,22 @@ def show_tiles():
 
 def show_anchor():
     print("anchor", end=',')
-    anchor = get_frame_data('anchor_tiles.json')
-    if anchor is None:
+    anchor_tile = get_frame_data('anchor_tiles.json')
+    if anchor_tile is None:
         return
-    q = anchor['shape']
+    q = anchor_tile['shape']
     center = np.mean(q, axis=0).astype(np.int32)
     draw_quad(frame, q)
-    cv2.putText(frame, str(anchor['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+    cv2.putText(frame, str(anchor_tile['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
 
 def sync_sim():
     import video_replicator
-    anchor = get_frame_data('anchor_tiles.json')
-    if anchor is None:
+    anchor_tile = get_frame_data('anchor_tiles.json')
+    ducks = get_frame_data('ducks.json') # Each duck is a key value pair of id and position
+    ducks = [position for position in ducks.values()] # Convert ducks to a list of positions only
+    if anchor_tile is None or ducks is None:
         return
-    video_replicator.update_anchor_position(anchor['id'])
-    video_replicator.update_cone_position(anchor['id'], anchor['shape'], frame)
+    video_replicator.sync_to_video(anchor_tile, frame, ducks)
     print("sim_sync", end=',')
 
 # Setup

@@ -7,16 +7,27 @@ import numpy as np
 import time
 import math
 import cv2
-from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix, draw_quad
+from pose_estimation import estimate_square_pose, estimate_marker_pose, find_arucos, find_quadrilaterals, estimate_camera_pose, get_camera_matrix, draw_quad, project_point_to_plane
 from sim_tools import orient_object, move_object, sim, get_image
 from keybrd import rising_edge
 import json
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-# Connect and get simulator objects
+# Get simulator objects
 cone = sim.getObject('/VisionTest[0]/Cone')
 sim_anchor = sim.getObject('/VisionTest[0]/Anchor')
+sim_ducks = [
+    sim.getObject('/VisionTest[0]/Duck[0]'),
+    sim.getObject('/VisionTest[0]/Duck[1]'),
+    sim.getObject('/VisionTest[0]/Duck[2]'),
+    sim.getObject('/VisionTest[0]/Duck[3]'),
+    sim.getObject('/VisionTest[0]/Duck[4]'),
+    sim.getObject('/VisionTest[0]/Duck[5]'),
+    sim.getObject('/VisionTest[0]/Duck[6]'),
+]
+
+# Get stuff
 anchors = json.load(open('anchors.json')) # It's a dictionary of anchor_id -> anchor, each anchor is a dict x and y offsets
 cam_matrix = get_camera_matrix(x_res=848, y_res=480, fov_x_deg=60)
 dist_coeffs = np.zeros((5, 1), dtype=np.float32)
@@ -26,9 +37,6 @@ last_anchor_id = None
 def update_anchor_position(anchor_id):
     global last_anchor_id
     if last_anchor_id == anchor_id:
-        return
-    if str(anchor_id) not in anchors:
-        print(f"Anchor ID {anchor_id} not found in anchors.json")
         return
     anchor = anchors[str(anchor_id)]
     x_off = anchor['x'] * tile_size
@@ -54,3 +62,23 @@ def update_cone_position(anchor_id, quad, frame):
     
     move_object(cone, x=x, y=y, z=z)
     orient_object(cone, alpha=alpha, beta=beta, gamma=gamma)
+
+def sync_to_video(anchor_tile, frame, ducks_pos):
+    anchor_id = anchor_tile['id']
+    quad = anchor_tile['shape']
+    if str(anchor_id) not in anchors:
+        print(f"Anchor ID {anchor_id} not found in anchors.json")
+        return
+    anchor = anchors[str(anchor_id)]
+    x_off = anchor['x'] * tile_size
+    y_off = anchor['y'] * tile_size
+    update_anchor_position(anchor_id)
+    update_cone_position(anchor_id, quad, frame)
+    if ducks_pos:
+        ducks_cnt = min(len(ducks_pos), len(sim_ducks))
+        for i in range(ducks_cnt):
+            sim_duck = sim_ducks[i]
+            duck_pos = ducks_pos[i]
+            point_pos = project_point_to_plane(quad, duck_pos, 0.2)
+            point_pos = (-float(point_pos[0])+y_off, -float(point_pos[1])+x_off)
+            move_object(sim_duck, y=point_pos[0], x=point_pos[1])
