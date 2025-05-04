@@ -22,5 +22,9 @@ Video
 +- Get quads
 + Assign ids
 + Anchor to just one at a time
-- Visualize the tile being anchored to in the sim
-- Adjust tile rotation
++ Visualize the tile being anchored to in the sim
++ Adjust tile rotation
++ Estimate camera pose
++ Project duck points
+- Export sim data
+- Export duck positions
