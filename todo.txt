@@ -21,4 +21,6 @@ Sim
 Video
 +- Get quads
 + Assign ids
-- Anchor to just one at a time
++ Anchor to just one at a time
+- Visualize the tile being anchored to in the sim
+- Adjust tile rotation

@@ -237,6 +237,25 @@ def project_point_to_plane(quad, point, square_length):
     projected = (float(projected[0]) - square_length*0.5, float(projected[1]) - square_length*0.5)
     return projected
 
+def rotate_quad(quad, rot_count):
+    # Normalize rot_count to 0,1,2, or 3.
+    rot = rot_count % 4
+
+    # If no rotation is needed, return the original quad.
+    if rot == 0:
+        return quad
+
+    new_quad = quad.copy()
+    # Rotate 'rot' times
+    for _ in range(rot):
+        new_quad = np.array([
+            new_quad[3],
+            new_quad[0],
+            new_quad[1],
+            new_quad[2]
+        ])
+    return new_quad
+
 # CIRCLES
 def find_ellipses(frame, lower_hsv, upper_hsv):
     # Find contours that match the specified color

@@ -6,6 +6,83 @@ import time
 import math
 import cv2
 import keybrd
+import video_replicator
+
+class VideoPlayer:
+    def __init__(self, frame_source):
+        self.frame_source = frame_source
+        self.frame_count = 0
+        self._frame_idx = 0.0
+        self.fps = 30  # Default FPS
+        self._get_frame = None
+        self.last_time = None
+        self.dt = 0.0
+        self.setup_video_source()
+
+    def get_frame(self, idx=None):
+        if idx is None:
+            idx = self.frame_idx
+        return self._get_frame(idx)
+
+    def step(self, step_size=1):
+        self._frame_idx += step_size
+        self._frame_idx = self._frame_idx % self.frame_count
+    
+    def time_step(self):
+        self.dt = time.time() - self.last_time if self.last_time is not None else 0.0
+        self.last_time = time.time()
+        return self.dt
+
+    def move(self, speed=1):
+        self._frame_idx += speed * self.dt * self.fps
+        self._frame_idx = self._frame_idx % self.frame_count
+
+    @property
+    def frame_idx(self):
+        return int(self._frame_idx)
+
+    def setup_video_source(self):
+        # If frame_source is a folder, load images
+        if os.path.isdir(self.frame_source):
+            image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+            image_files = sorted([
+                os.path.join(self.frame_source, f) 
+                for f in os.listdir(self.frame_source) 
+                if f.lower().endswith(image_extensions)
+            ])
+            self.frame_count = len(image_files)
+            print("Total frames (images):", self.frame_count)
+            
+            def get_frame(idx):
+                idx = int(idx)
+                if idx < 0 or idx >= len(image_files):
+                    print("Index out of bounds:", idx)
+                    return None
+                frame = cv2.imread(image_files[idx])
+                if frame is None:
+                    print("Failed to load image", image_files[idx])
+                return frame
+            
+            self._get_frame = get_frame
+        else:
+            # Assume frame_source is a video file.
+            cap = cv2.VideoCapture(self.frame_source)
+            if not cap.isOpened():
+                print("Error opening video file:", self.frame_source)
+                exit(1)
+            
+            self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print("Total frames:", self.frame_count)
+            
+            def get_frame(idx):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if not ret:
+                    print("Failed to get frame", idx)
+                    return None
+                return frame
+            
+            self._get_frame = get_frame
 
 # Helper functions
 def draw_quad(frame, quad, drawOutline=True):
@@ -114,21 +191,15 @@ def get_frame_data(file, fr_idx=None):
     if data is None:
         return None
     
-    fr_idx = fr_idx or frame_idx
+    fr_idx = fr_idx or vp.frame_idx
     frame_key = str(int(fr_idx))
     if frame_key not in data:
         return None
     return data[frame_key]
 
-# Drawing functions
-def draw_quads():
-    quads = get_frame_data('quads.json')
-    if quads is None:
-        return
-    for quad in quads:
-        draw_quad(frame, quad, drawOutline=True)
-        
-def draw_ducks():
+# Drawing functions        
+def show_ducks():
+    print("ducks", end=',')
     ducks = get_frame_data('ducks.json')
     if ducks is None:
         return
@@ -136,7 +207,16 @@ def draw_ducks():
         x, y = position[0], position[1]
         cv2.putText(frame, str(point_id), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-def draw_tiles():
+def show_quads():
+    print("quads", end=',')
+    quads = get_frame_data('quads.json')
+    if quads is None:
+        return
+    for quad in quads:
+        draw_quad(frame, quad, drawOutline=True)
+
+def show_tiles():
+    print("tiles", end=',')
     tiles = get_frame_data('tiles.json')
     if tiles is None:
         return
@@ -145,49 +225,69 @@ def draw_tiles():
         center = np.mean(q, axis=0).astype(np.int32)
         cv2.putText(frame, str(tile['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
+def show_anchor():
+    print("anchor", end=',')
+    anchor = get_frame_data('anchor_tiles.json')
+    if anchor is None:
+        return
+    q = anchor['shape']
+    center = np.mean(q, axis=0).astype(np.int32)
+    draw_quad(frame, q)
+    cv2.putText(frame, str(anchor['id']), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
+def sync_sim():
+    import video_replicator
+    anchor = get_frame_data('anchor_tiles.json')
+    if anchor is None:
+        return
+    video_replicator.update_anchor_position(anchor['id'])
+    print("sim_sync", end=',')
+
 # Setup
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 re = keybrd.rising_edge # Function to check if a key is pressed once
 pr = keybrd.is_pressed # Function to check if a key is pressed
-frame_count = 1  # This will be overwritten in setup_video_source
-frame_idx = 0.0 # Don't ask why it's a float, it just is
-fps = 30  # Default FPS
 files = {}  # Dictionary to store file data
-frame = None  # Placeholder for the current frame
-get_frame = setup_video_source(r"input.mp4")
+# frame_count = 1  # This will be overwritten in setup_video_source
+# frame_idx = 0.0 # Don't ask why it's a float, it just is
+# fps = 30  # Default FPS
+# frame = None  # Placeholder for the current frame
+# get_frame = setup_video_source(r"input.mp4")
+
+# Initialize the video player
+vp = VideoPlayer(r"input.mp4")
 
 last_time = time.time()
 while True:
-    # Time step.
-    dt = time.time() - last_time
-    last_time = time.time()
+    # Get current frame
+    vp.time_step()
+    vp.move(1 if pr('d') else -1 if pr('a') else 0)  # Move forward/backward
+    vp.move((1 if pr('e') else -1 if pr('q') else 0) * 10)  # Fast forward/backward
+    vp.step(1 if re('w') else -1 if re('s') else 0)  # Step forward/backward
+    frame = vp.get_frame()
 
-    # Update frame index based on keyboard input.
-    frame_idx += dt * fps if pr('d') else -dt * fps if pr('a') else 0           # Move forward/backward
-    frame_idx += (dt * fps if pr('e') else -dt * fps if pr('q') else 0) * 10    # Fast forward/backward
-    frame_idx += 1 if re('w') else -1 if re('s') else 0                         # Step forward/backward
-    frame_idx = frame_idx % frame_count
-
-    # Get the current frame by converting frame_idx to an int.
-    frame = get_frame(int(frame_idx))
     if frame is not None:
-        print(f"Frame {int(frame_idx)}/{frame_count} ", end='')
+        print(f"Frame {vp.frame_idx}/{vp.frame_count} ", end='')
         
         # Layers
         if keybrd.is_toggled('1'):
-            draw_ducks()
+            show_ducks()
         if keybrd.is_toggled('2'):
-            draw_quads()
+            show_quads()
         if keybrd.is_toggled('3'):
-            draw_tiles()
+            show_tiles()
+        if keybrd.is_toggled('4'):
+            show_anchor()
+        if keybrd.is_toggled('5'):
+            sync_sim()
         cv2.imshow("Video", frame)
         print()
     
     if re('p'):
         # Save the current frame as an image.
-        output_file = f"frame_{int(frame_idx)}.png"
+        output_file = f"frame_{vp.frame_idx}.png"
         cv2.imwrite(output_file, frame)
-        print(f"Saved frame {int(frame_idx)} as {output_file}")
+        print(f"Saved frame {vp.frame_idx} as {output_file}")
 
     # Press 'Escape' to exit.
     if cv2.waitKey(1) & 0xFF == 27:

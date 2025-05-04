@@ -1,0 +1,52 @@
+{
+    "0": {
+        "tile_id": 14,
+        "anchor_id": 0,
+        "rot_cnt": 2
+    },
+    "60": {
+        "tile_id": 72,
+        "anchor_id": 1,
+        "rot_cnt": 2
+    },
+    "185": {
+        "tile_id": 213,
+        "anchor_id": 2,
+        "rot_cnt": 3
+    },
+    "227": {
+        "tile_id": 311,
+        "anchor_id": 3,
+        "rot_cnt": 3
+    },
+    "269": {
+        "tile_id": 399,
+        "anchor_id": 3,
+        "rot_cnt": 3
+    },
+    "316": {
+        "tile_id": 395,
+        "anchor_id": 4,
+        "rot_cnt": 3
+    },
+    "341": {
+        "tile_id": 603,
+        "anchor_id": 4,
+        "rot_cnt": 3
+    },
+    "358": {
+        "tile_id": 598,
+        "anchor_id": 5,
+        "rot_cnt": 3
+    },
+    "364": {
+        "tile_id": 631,
+        "anchor_id": 5,
+        "rot_cnt": 3
+    },
+    "373": {
+        "tile_id": 641,
+        "anchor_id": 5,
+        "rot_cnt": 3
+    }
+}
