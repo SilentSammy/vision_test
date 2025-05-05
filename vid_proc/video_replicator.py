@@ -50,30 +50,12 @@ def get_ducks_pos(anchor, quad, ducks_img_pos):
             ducks_pos.append(point_pos)
     return ducks_pos
 
-def sync_to_video1(anchor_tile, frame, ducks_img_pos):
-    anchor_id = anchor_tile['id']
-    quad = anchor_tile['shape']
-    if str(anchor_id) not in anchors:
-        return
-    anchor = anchors[str(anchor_id)]
-    move_object(sim_anchor, anchor['x'] * tile_size, anchor['y'] * tile_size)
-    
-    # Camera
-    x, y, z, alpha, beta, gamma = get_cam_pose(anchor, quad, frame)
-    move_object(cone, x=x, y=y, z=z)
-    orient_object(cone, alpha=alpha, beta=beta, gamma=gamma)
-
-    # Ducks
-    ducks_pos = get_ducks_pos(anchor, quad, ducks_img_pos)
-    for i, dp in enumerate(ducks_pos):
-        move_object(sim_ducks[i], y=dp[0], x=dp[1])
-
 def get_frame_data(anchor_tile, frame, ducks_img_pos):
-    sim_frame_data = {}
     anchor_id = anchor_tile['id']
-    quad = anchor_tile['shape']
     if str(anchor_id) not in anchors:
         return None
+    quad = anchor_tile['shape']
+    sim_frame_data = {}
 
     # Save anchor position
     anchor = anchors[str(anchor_id)]
@@ -129,5 +111,14 @@ if __name__ == '__main__':
         json.dump(sim_frames, f, indent=4)
     print("Simulation frames saved to sim_frames.json")
 
-    # Also save the duck positions as a separate CSV file
-    # Format as table with columns: frame_idx, duck_id, x, y
+    # Extract duck-related data from sim_frames
+    duck_pos = []
+    for frame_idx, sim_frame_data in sim_frames.items():
+        for i, duck in enumerate(sim_frame_data['ducks']):
+            duck_pos.append((frame_idx, i, duck[0], duck[1]))
+    # Save the duck positions to a CSV file
+    with open('duck_positions.csv', 'w') as f:
+        f.write("frame_idx,duck_id,x,y\n")
+        for frame_idx, duck_id, x, y in duck_pos:
+            f.write(f"{frame_idx},{duck_id},{x},{y}\n")
+

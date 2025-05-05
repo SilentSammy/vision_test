@@ -26,5 +26,7 @@ Video
 + Adjust tile rotation
 + Estimate camera pose
 + Project duck points
-- Export sim data
-- Export duck positions
++ Export sim data
++ Export duck positions
+- Plot duck positions
+- Remap duck ids
